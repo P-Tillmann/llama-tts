@@ -421,6 +421,7 @@ enum mtmd_gen_audio_type {
     MTMD_GEN_AUDIO_TYPE_QWEN3TTS,
     MTMD_GEN_AUDIO_TYPE_POCKETTTS,
     MTMD_GEN_AUDIO_TYPE_VITS, // symbol ids (phonemes) to PCM in one GEN_WAV call, no backbone
+    MTMD_GEN_AUDIO_TYPE_KOKORO, // same, speakers are voice packs
 };
 
 struct mtmd_gen_audio_info {

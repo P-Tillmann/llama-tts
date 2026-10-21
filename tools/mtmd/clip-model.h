@@ -574,6 +574,78 @@ struct clip_vits {
     ggml_tensor * dec_conv_post_w = nullptr;
 };
 
+// kokoro generator, see models/kokoro.cpp
+struct clip_kokoro {
+    using wb = clip_vits::wb;
+    // bidirectional, w_ih [IN, 8H], b [8H] = b_ih + b_hh, w_hh [H, 4H, 2]; gates i, f, g, o
+    struct lstm {
+        ggml_tensor * w_ih = nullptr;
+        ggml_tensor * b    = nullptr;
+        ggml_tensor * w_hh = nullptr;
+    };
+    // style-conditioned norm, gamma includes the +1
+    struct ada {
+        wb gamma;
+        wb beta;
+    };
+    // AdainResBlk1d (StyleTTS2)
+    struct adain_resblk {
+        wb  conv1;
+        wb  conv2;
+        ada norm1;
+        ada norm2;
+        ggml_tensor * conv1x1_w = nullptr; // when dim_in != dim_out
+        wb  pool;                          // depthwise ConvTranspose1d when upsampling, w is [C, 3]
+    };
+    // AdaINResBlock1 (iSTFTNet), dilations 1, 3, 5
+    struct adain_resblock1 {
+        wb  c1[3];
+        wb  c2[3];
+        ada n1[3];
+        ada n2[3];
+        ggml_tensor * alpha1[3]  = {};
+        ggml_tensor * ialpha1[3] = {};
+        ggml_tensor * alpha2[3]  = {};
+        ggml_tensor * ialpha2[3] = {};
+    };
+
+    // text side
+    ggml_tensor * bert_tok_embd = nullptr;
+    ggml_tensor * bert_pos_embd = nullptr; // token type 0 folded in
+    wb bert_embd_norm;
+    wb bert_embd_proj;
+    clip_layer bert_layer; // shared by all layers
+    wb bert_proj;
+    lstm dur_enc_lstm[3];
+    ada  dur_enc_norm[3];
+    lstm dur_lstm;
+    wb   dur_proj;
+    ggml_tensor * text_tok_embd = nullptr;
+    wb   text_conv[3];
+    wb   text_norm[3];
+    lstm text_lstm;
+
+    // frame side
+    lstm shared_lstm;
+    adain_resblk f0[3];
+    adain_resblk n[3];
+    wb f0_proj;
+    wb n_proj;
+    wb dec_f0_conv;
+    wb dec_n_conv;
+    wb dec_asr_res;
+    adain_resblk dec_encode;
+    adain_resblk dec_decode[4];
+    wb l_linear;
+    wb noise_conv[2];
+    adain_resblock1 noise_res[2];
+    wb ups[2];
+    adain_resblock1 res[6];
+    wb conv_post;
+
+    ggml_tensor * voices = nullptr; // [256, 510, n_voices]
+};
+
 struct clip_code2wav {
     // "upsample" stage: one ConvNeXt block plus the causal ConvTranspose1d before it
     struct upsample_block {
@@ -907,6 +979,7 @@ struct clip_model {
     std::vector<clip_layer> gen_tfm_layers; // mimi decoder_transformer
 
     clip_vits vits;
+    clip_kokoro kokoro;
 
     // cogvlm
     ggml_tensor * mm_post_fc_norm_w = nullptr;

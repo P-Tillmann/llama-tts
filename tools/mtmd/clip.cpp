@@ -2072,6 +2072,7 @@ struct clip_model_loader {
                         hparams.gen_eos_threshold = -4.0f;
                     } break;
                 case PROJECTOR_TYPE_VITS:
+                case PROJECTOR_TYPE_KOKORO:
                     {
                         get_u32(KEY_GEN_AUDIO_SAMPLE_RATE, hparams.audio_sample_rate);
                         get_f32(KEY_GEN_AUDIO_NOISE_SCALE,   hparams.gen_noise_scale,   false);
@@ -2465,6 +2466,7 @@ struct clip_model_loader {
             model.proj_type != PROJECTOR_TYPE_QWEN3TTS_SPKENC &&
             model.proj_type != PROJECTOR_TYPE_POCKETTTS_GEN &&
             model.proj_type != PROJECTOR_TYPE_VITS &&
+            model.proj_type != PROJECTOR_TYPE_KOKORO &&
             model.proj_type != PROJECTOR_TYPE_MUSE_SPARK_AUDIO);
 
         // layers
@@ -3303,6 +3305,133 @@ struct clip_model_loader {
                         layer.ff_up_w   = get_tensor(string_format(TN_FFN_UP,      p, il, "weight"));
                         layer.ff_down_w = get_tensor(string_format(TN_FFN_DOWN,    p, il, "weight"));
                         layer.ls_2_w    = get_tensor(string_format(TN_LS_2,        p, il, "weight"));
+                    }
+                } break;
+            case PROJECTOR_TYPE_KOKORO:
+                {
+                    auto & ko = model.kokoro;
+                    using wb = clip_kokoro::wb;
+                    auto get_wb = [&](const std::string & p, bool bias = true) {
+                        wb r;
+                        r.w = get_tensor(p + ".weight");
+                        r.b = bias ? get_tensor(p + ".bias") : nullptr;
+                        return r;
+                    };
+                    auto get_ada = [&](const std::string & p) {
+                        clip_kokoro::ada r;
+                        r.gamma = get_wb(p + ".gamma");
+                        r.beta  = get_wb(p + ".beta");
+                        return r;
+                    };
+                    auto get_lstm = [&](const std::string & p) {
+                        clip_kokoro::lstm r;
+                        r.w_ih = get_tensor(p + ".w_ih");
+                        r.b    = get_tensor(p + ".b");
+                        r.w_hh = get_tensor(p + ".w_hh");
+                        if (r.w_hh->ne[2] != 2 || r.w_hh->ne[1] != 4 * r.w_hh->ne[0] || r.w_ih->ne[1] != 8 * r.w_hh->ne[0] ||
+                                r.w_hh->type != GGML_TYPE_F32) {
+                            throw std::runtime_error(string_format("%s: kokoro: bad lstm %s\n", __func__, p.c_str()));
+                        }
+                        return r;
+                    };
+                    auto get_resblk = [&](const std::string & p) {
+                        clip_kokoro::adain_resblk r;
+                        r.conv1 = get_wb(p + ".conv1");
+                        r.conv2 = get_wb(p + ".conv2");
+                        r.norm1 = get_ada(p + ".norm1");
+                        r.norm2 = get_ada(p + ".norm2");
+                        r.conv1x1_w = get_tensor(p + ".conv1x1.weight", false);
+                        r.pool.w    = get_tensor(p + ".pool.weight", false);
+                        r.pool.b    = get_tensor(p + ".pool.bias", r.pool.w != nullptr);
+                        return r;
+                    };
+                    auto get_resblock1 = [&](const std::string & p) {
+                        clip_kokoro::adain_resblock1 r;
+                        for (int d = 0; d < 3; d++) {
+                            const std::string sd = "." + std::to_string(d);
+                            r.c1[d] = get_wb(p + ".c1" + sd);
+                            r.c2[d] = get_wb(p + ".c2" + sd);
+                            r.n1[d] = get_ada(p + ".n1" + sd);
+                            r.n2[d] = get_ada(p + ".n2" + sd);
+                            r.alpha1[d]  = get_tensor(p + ".alpha1"  + sd);
+                            r.ialpha1[d] = get_tensor(p + ".ialpha1" + sd);
+                            r.alpha2[d]  = get_tensor(p + ".alpha2"  + sd);
+                            r.ialpha2[d] = get_tensor(p + ".ialpha2" + sd);
+                        }
+                        return r;
+                    };
+
+                    // text side
+                    ko.bert_tok_embd  = get_tensor("a.gen.bert.token_embd.weight");
+                    ko.bert_pos_embd  = get_tensor("a.gen.bert.position_embd.weight");
+                    ko.bert_embd_norm = get_wb("a.gen.bert.embd_norm");
+                    ko.bert_embd_proj = get_wb("a.gen.bert.embd_proj");
+                    {
+                        auto & layer = ko.bert_layer;
+                        const char * p = "a.gen.bert";
+                        layer.q_w       = get_tensor(string_format(TN_ATTN_Q,      p, 0, "weight"));
+                        layer.q_b       = get_tensor(string_format(TN_ATTN_Q,      p, 0, "bias"));
+                        layer.k_w       = get_tensor(string_format(TN_ATTN_K,      p, 0, "weight"));
+                        layer.k_b       = get_tensor(string_format(TN_ATTN_K,      p, 0, "bias"));
+                        layer.v_w       = get_tensor(string_format(TN_ATTN_V,      p, 0, "weight"));
+                        layer.v_b       = get_tensor(string_format(TN_ATTN_V,      p, 0, "bias"));
+                        layer.o_w       = get_tensor(string_format(TN_ATTN_OUTPUT, p, 0, "weight"));
+                        layer.o_b       = get_tensor(string_format(TN_ATTN_OUTPUT, p, 0, "bias"));
+                        layer.ln_1_w    = get_tensor(string_format(TN_LN_1,        p, 0, "weight"));
+                        layer.ln_1_b    = get_tensor(string_format(TN_LN_1,        p, 0, "bias"));
+                        layer.ff_up_w   = get_tensor(string_format(TN_FFN_UP,      p, 0, "weight"));
+                        layer.ff_up_b   = get_tensor(string_format(TN_FFN_UP,      p, 0, "bias"));
+                        layer.ff_down_w = get_tensor(string_format(TN_FFN_DOWN,    p, 0, "weight"));
+                        layer.ff_down_b = get_tensor(string_format(TN_FFN_DOWN,    p, 0, "bias"));
+                        layer.ln_2_w    = get_tensor(string_format(TN_LN_2,        p, 0, "weight"));
+                        layer.ln_2_b    = get_tensor(string_format(TN_LN_2,        p, 0, "bias"));
+                    }
+                    ko.bert_proj = get_wb("a.gen.bert_proj");
+                    for (int i = 0; i < 3; i++) {
+                        ko.dur_enc_lstm[i] = get_lstm(string_format("a.gen.dur_enc.%d.lstm", i));
+                        ko.dur_enc_norm[i] = get_ada(string_format("a.gen.dur_enc.%d.norm", i));
+                        ko.text_conv[i] = get_wb(string_format("a.gen.text_enc.cnn.%d.conv", i));
+                        ko.text_norm[i] = get_wb(string_format("a.gen.text_enc.cnn.%d.norm", i));
+                    }
+                    ko.dur_lstm      = get_lstm("a.gen.dur_lstm");
+                    ko.dur_proj      = get_wb("a.gen.dur_proj");
+                    ko.text_tok_embd = get_tensor("a.gen.text_enc.token_embd.weight");
+                    ko.text_lstm     = get_lstm("a.gen.text_enc.lstm");
+
+                    // frame side
+                    ko.shared_lstm = get_lstm("a.gen.shared_lstm");
+                    for (int i = 0; i < 3; i++) {
+                        ko.f0[i] = get_resblk(string_format("a.gen.f0.%d", i));
+                        ko.n[i]  = get_resblk(string_format("a.gen.n.%d", i));
+                    }
+                    ko.f0_proj     = get_wb("a.gen.f0_proj");
+                    ko.n_proj      = get_wb("a.gen.n_proj");
+                    ko.dec_f0_conv = get_wb("a.gen.dec.f0_conv");
+                    ko.dec_n_conv  = get_wb("a.gen.dec.n_conv");
+                    ko.dec_asr_res = get_wb("a.gen.dec.asr_res");
+                    ko.dec_encode  = get_resblk("a.gen.dec.encode");
+                    for (int i = 0; i < 4; i++) {
+                        ko.dec_decode[i] = get_resblk(string_format("a.gen.dec.decode.%d", i));
+                    }
+                    ko.l_linear = get_wb("a.gen.gen.l_linear");
+                    for (int i = 0; i < 2; i++) {
+                        ko.noise_conv[i] = get_wb(string_format("a.gen.gen.noise_conv.%d", i));
+                        ko.noise_res[i]  = get_resblock1(string_format("a.gen.gen.noise_res.%d", i));
+                        ko.ups[i]        = get_wb(string_format("a.gen.gen.up.%d", i));
+                    }
+                    for (int j = 0; j < 6; j++) {
+                        ko.res[j] = get_resblock1(string_format("a.gen.gen.res.%d", j));
+                    }
+                    ko.conv_post = get_wb("a.gen.gen.conv_post");
+                    ko.voices = get_tensor(TN_A_GEN_KOKORO_VOICES);
+
+                    // the graph hard-codes the Kokoro v1.0 layout
+                    if (ko.voices->ne[0] != 256 || ko.voices->ne[1] != 510 || ko.voices->type != GGML_TYPE_F32 ||
+                            ko.bert_pos_embd->ne[1] != 512 || ko.dur_proj.w->ne[1] != 50 || ko.conv_post.w->ne[2] != 22 ||
+                            ko.ups[0].w->ne[0] != 20 || ko.ups[1].w->ne[0] != 12 || ko.l_linear.w->ne[0] != 9 ||
+                            (int64_t) hparams.gen_symbols.size() != ko.text_tok_embd->ne[1] ||
+                            (int64_t) hparams.gen_speakers.size() != ko.voices->ne[2]) {
+                        throw std::runtime_error(string_format("%s: kokoro: unsupported model layout\n", __func__));
                     }
                 } break;
             case PROJECTOR_TYPE_VITS:
@@ -4869,6 +4998,7 @@ int clip_n_output_tokens(const clip_ctx * ctx, const clip_image_f32 * img) {
                 n_patches = 1;
             } break;
         case PROJECTOR_TYPE_VITS:
+        case PROJECTOR_TYPE_KOKORO:
             {
                 n_patches = 1;
             } break;
@@ -5029,6 +5159,17 @@ void clip_enc_state_free(clip_enc_state * state) {
     delete state;
 }
 
+static void clip_set_cpu_threads(clip_ctx * ctx, int n_threads) {
+    ggml_backend_dev_t dev = ggml_backend_get_device(ctx->backend_cpu);
+    ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
+    if (reg) {
+        auto ggml_backend_set_n_threads_fn = (ggml_backend_set_n_threads_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_set_n_threads");
+        if (ggml_backend_set_n_threads_fn) {
+            ggml_backend_set_n_threads_fn(ctx->backend_cpu, n_threads);
+        }
+    }
+}
+
 // vits runs two graphs per call: the frame count depends on the predicted durations
 static bool clip_encode_vits(clip_ctx * ctx, clip_encode_params * params) {
     const auto & hparams = ctx->model.hparams;
@@ -5068,14 +5209,7 @@ static bool clip_encode_vits(clip_ctx * ctx, clip_encode_params * params) {
 
     std::normal_distribution<float> dist(0.0f, 1.0f);
 
-    ggml_backend_dev_t dev = ggml_backend_get_device(ctx->backend_cpu);
-    ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
-    if (reg) {
-        auto ggml_backend_set_n_threads_fn = (ggml_backend_set_n_threads_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_set_n_threads");
-        if (ggml_backend_set_n_threads_fn) {
-            ggml_backend_set_n_threads_fn(ctx->backend_cpu, params->n_threads);
-        }
-    }
+    clip_set_cpu_threads(ctx, params->n_threads);
 
     auto set_input = [](ggml_cgraph * gf, const char * name, const void * data, size_t nbytes) {
         ggml_tensor * t = ggml_graph_get_tensor(gf, name);
@@ -5166,6 +5300,171 @@ static bool clip_encode_vits(clip_ctx * ctx, clip_encode_params * params) {
     return true;
 }
 
+
+// kokoro runs two graphs per call: the frame count depends on the predicted durations
+static bool clip_encode_kokoro(clip_ctx * ctx, clip_encode_params * params) {
+    const auto & hparams = ctx->model.hparams;
+    const auto & ko      = ctx->model.kokoro;
+
+    if (params->gen_process != CLIP_GEN_PROCESS_GEN_WAV || params->codes == nullptr || params->out_audio == nullptr || params->imgs->entries.empty()) {
+        LOG_ERR("%s: kokoro takes GEN_WAV with symbol ids as codes\n", __func__);
+        return false;
+    }
+    if (params->gen_state == nullptr) {
+        LOG_ERR("%s: audio gen requires a gen state\n", __func__);
+        return false;
+    }
+    // ids include the 0 at both ends; the position table limits the length
+    const std::vector<int32_t> & ids = *params->codes;
+    const int64_t n_tokens = (int64_t) ids.size();
+    if (n_tokens < 3 || n_tokens > ko.bert_pos_embd->ne[1]) {
+        LOG_ERR("%s: number of symbols must be in [3, %lld], got %lld\n", __func__, (long long) ko.bert_pos_embd->ne[1], (long long) n_tokens);
+        return false;
+    }
+    for (int32_t id : ids) {
+        if (id < 0 || id >= ko.text_tok_embd->ne[1]) {
+            LOG_ERR("%s: symbol id %d out of range\n", __func__, id);
+            return false;
+        }
+    }
+    const int64_t n_voices = ko.voices->ne[2];
+    const int32_t voice    = params->speaker < 0 ? 0 : params->speaker;
+    if (voice >= n_voices) {
+        LOG_ERR("%s: voice %d out of range, the model has %lld\n", __func__, voice, (long long) n_voices);
+        return false;
+    }
+    // the reference picks the style row from the phoneme count: pack[len(phonemes) - 1]
+    const int32_t style_idx = voice * (int32_t) ko.voices->ne[1] + (int32_t) std::min<int64_t>(n_tokens - 3, ko.voices->ne[1] - 1);
+    const float length_scale = params->length_scale > 0.0f ? params->length_scale : hparams.gen_length_scale;
+    const float speed        = 1.0f / length_scale;
+    const float noise_scale  = params->noise_scale >= 0.0f ? params->noise_scale : hparams.gen_noise_scale;
+
+    clip_set_cpu_threads(ctx, params->n_threads);
+
+    auto set_input = [](ggml_cgraph * gf, const char * name, const void * data, size_t nbytes) {
+        ggml_tensor * t = ggml_graph_get_tensor(gf, name);
+        GGML_ASSERT(t != nullptr && (t->flags & GGML_TENSOR_FLAG_INPUT) && ggml_nbytes(t) == nbytes);
+        ggml_backend_tensor_set(t, data, 0, nbytes);
+    };
+    auto get_output = [](ggml_cgraph * gf, const char * name, std::vector<float> & out) {
+        ggml_tensor * t = ggml_graph_get_tensor(gf, name);
+        GGML_ASSERT(t != nullptr && t->type == GGML_TYPE_F32);
+        out.resize(ggml_nelements(t));
+        ggml_backend_tensor_get(t, out.data(), 0, ggml_nbytes(t));
+    };
+    auto run = [&](clip_graph_kokoro & builder, const std::function<void(ggml_cgraph *)> & set_inputs) -> ggml_cgraph * {
+        ggml_backend_sched_reset(ctx->sched.get());
+        ggml_cgraph * gf = builder.build();
+        if (!ggml_backend_sched_alloc_graph(ctx->sched.get(), gf)) {
+            LOG_ERR("%s: failed to allocate compute graph\n", __func__);
+            return nullptr;
+        }
+        set_input(gf, "inp_style", &style_idx, sizeof(style_idx));
+        set_inputs(gf);
+        if (ggml_backend_sched_graph_compute(ctx->sched.get(), gf) != GGML_STATUS_SUCCESS) {
+            LOG_ERR("%s: graph compute failed\n", __func__);
+            return nullptr;
+        }
+        return gf;
+    };
+    const clip_image_f32 & img = params->imgs->entries[0];
+
+    // text side: durations and the token features
+    std::vector<float> dur;
+    std::vector<float> feat_d;
+    std::vector<float> feat_t;
+    {
+        clip_graph_kokoro builder(ctx, img, 0, (int) n_tokens, 0, speed, noise_scale);
+        ggml_cgraph * gf = run(builder, [&](ggml_cgraph * gf) {
+            set_input(gf, "inp_codes", ids.data(), ids.size() * sizeof(int32_t));
+        });
+        if (!gf) {
+            return false;
+        }
+        get_output(gf, "out_dur",  dur);
+        get_output(gf, "out_d",    feat_d);
+        get_output(gf, "out_t_en", feat_t);
+    }
+
+    // round half to even like torch.round, at least one frame per token
+    const int64_t max_frames = 2048;
+    std::vector<int32_t> idx;
+    for (int64_t i = 0; i < n_tokens; i++) {
+        const float r = std::nearbyint(dur[i]);
+        const int64_t n = std::isfinite(r) ? std::max<int64_t>(1, (int64_t) std::min(r, (float) max_frames)) : 1;
+        if ((int64_t) idx.size() + n > max_frames) {
+            LOG_ERR("%s: more than %lld frames, split the input\n", __func__, (long long) max_frames);
+            return false;
+        }
+        idx.insert(idx.end(), (size_t) n, (int32_t) i);
+    }
+    const int64_t n_frames  = (int64_t) idx.size();
+    const int64_t n_samples = 600 * n_frames;
+
+    // constants: periodic Hann window, STFT basis [22][20] (re, -im), one-sided inverse basis [20][22] with the window
+    const int n_fft = 20;
+    const int hop   = 5;
+    std::vector<double> win(n_fft);
+    for (int n = 0; n < n_fft; n++) {
+        win[n] = 0.5 - 0.5 * std::cos(2.0 * M_PI * n / n_fft);
+    }
+    std::vector<float> stft(22 * n_fft);
+    std::vector<float> istft(n_fft * 22);
+    for (int j = 0; j <= n_fft / 2; j++) {
+        const double coef = (j == 0 || j == n_fft / 2) ? 1.0 / n_fft : 2.0 / n_fft;
+        for (int n = 0; n < n_fft; n++) {
+            const double a = 2.0 * M_PI * j * n / n_fft;
+            const double sn = (j == 0 || j == n_fft / 2) ? 0.0 : std::sin(a);
+            stft[(j)      * n_fft + n] = (float) ( win[n] * std::cos(a));
+            stft[(j + 11) * n_fft + n] = (float) (-win[n] * sn);
+            istft[n * 22 + j]      = (float) ( coef * win[n] * std::cos(a));
+            istft[n * 22 + j + 11] = (float) (-coef * win[n] * sn);
+        }
+    }
+    // overlap-add of the squared window, center padding of n_fft / 2 removed
+    const int64_t n_stft = n_samples / hop + 1;
+    std::vector<double> env(n_samples + n_fft, 0.0);
+    for (int64_t f = 0; f < n_stft; f++) {
+        for (int n = 0; n < n_fft; n++) {
+            env[f * hop + n] += win[n] * win[n];
+        }
+    }
+    std::vector<float> inv_env(n_samples);
+    for (int64_t t = 0; t < n_samples; t++) {
+        inv_env[t] = (float) (1.0 / env[t + n_fft / 2]);
+    }
+    std::vector<float> harm(9);
+    for (int k = 0; k < 9; k++) {
+        harm[k] = (float) (k + 1);
+    }
+
+    const float sr = (float) hparams.audio_sample_rate;
+
+    // frame side
+    std::normal_distribution<float> dist(0.0f, 1.0f);
+    std::vector<float> noise(9 * n_samples);
+    for (auto & v : noise) {
+        v = dist(params->gen_state->rng);
+    }
+    clip_graph_kokoro builder(ctx, img, 1, (int) n_tokens, (int) n_frames, speed, noise_scale);
+    ggml_cgraph * gf = run(builder, [&](ggml_cgraph * gf) {
+        set_input(gf, "inp_d",     feat_d.data(),  feat_d.size()  * sizeof(float));
+        set_input(gf, "inp_t_en",  feat_t.data(),  feat_t.size()  * sizeof(float));
+        set_input(gf, "inp_idx",   idx.data(),     idx.size()     * sizeof(int32_t));
+        set_input(gf, "inp_noise", noise.data(),   noise.size()   * sizeof(float));
+        set_input(gf, "inp_harm",  harm.data(),    harm.size()    * sizeof(float));
+        set_input(gf, "inp_sr",    &sr,            sizeof(float));
+        set_input(gf, "inp_stft",  stft.data(),    stft.size()    * sizeof(float));
+        set_input(gf, "inp_istft", istft.data(),   istft.size()   * sizeof(float));
+        set_input(gf, "inp_env",   inv_env.data(), inv_env.size() * sizeof(float));
+    });
+    if (!gf) {
+        return false;
+    }
+    get_output(gf, "out_audio", *params->out_audio);
+    return true;
+}
+
 bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
     const clip_image_f32_batch & imgs = *params->imgs;
     int n_batch_cur = imgs.entries.size();
@@ -5178,6 +5477,9 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
 
     if (ctx->proj_type() == PROJECTOR_TYPE_VITS) {
         return clip_encode_vits(ctx, params);
+    }
+    if (ctx->proj_type() == PROJECTOR_TYPE_KOKORO) {
+        return clip_encode_kokoro(ctx, params);
     }
 
     // if buffers are not allocated, we need to do a warmup run to allocate them
@@ -6856,6 +7158,7 @@ int clip_n_mmproj_embd(const struct clip_ctx * ctx) {
         case PROJECTOR_TYPE_POCKETTTS_GEN:
             return ctx->model.gen_input_lin_w->ne[1];
         case PROJECTOR_TYPE_VITS:
+        case PROJECTOR_TYPE_KOKORO:
             return ctx->model.hparams.n_embd;
         case PROJECTOR_TYPE_PARAKEET:
             return ctx->model.mm_1_w->ne[1];
@@ -6865,6 +7168,9 @@ int clip_n_mmproj_embd(const struct clip_ctx * ctx) {
 }
 
 int clip_n_gen_speakers(const struct clip_ctx * ctx) {
+    if (ctx->model.kokoro.voices) {
+        return (int) ctx->model.kokoro.voices->ne[2];
+    }
     const auto * spk = ctx->model.vits.spk_embd;
     return spk ? (int) spk->ne[1] : 1;
 }

@@ -333,6 +333,11 @@
 #define TN_A_GEN_VITS_RES_C1     "a.gen.dec.res.%d.c1.%d.%s"
 #define TN_A_GEN_VITS_RES_C2     "a.gen.dec.res.%d.c2.%d.%s"
 
+// kokoro (StyleTTS2 prosody + iSTFTNet): phoneme ids -> raw PCM, no backbone
+// the shared ALBERT layer uses the generic TN_ATTN_*/TN_FFN_*/TN_LN_* macros, prefix "a.gen.bert", block 0
+// other tensors are "<module path>.weight|bias", see scripts/convert_kokoro.py
+#define TN_A_GEN_KOKORO_VOICES   "a.gen.voices"
+
 // cogvlm
 #define TN_MM_POST_FC_NORM "mm.post_fc_norm.%s"
 #define TN_MM_H_TO_4H      "mm.up.%s"
@@ -580,6 +585,7 @@ enum projector_type {
     PROJECTOR_TYPE_POCKETTTS_SPKENC,
     PROJECTOR_TYPE_POCKETTTS_GEN,
     PROJECTOR_TYPE_VITS,
+    PROJECTOR_TYPE_KOKORO,
     PROJECTOR_TYPE_MUSE_GLIMMER,
     PROJECTOR_TYPE_SENSENOVA_U1,
     PROJECTOR_TYPE_COHERE2V,
@@ -656,6 +662,7 @@ static std::map<projector_type, std::string> PROJECTOR_TYPE_NAMES = {
     { PROJECTOR_TYPE_POCKETTTS_SPKENC,  "pockettts_spkenc"},
     { PROJECTOR_TYPE_POCKETTTS_GEN,     "pockettts_gen"},
     { PROJECTOR_TYPE_VITS,              "vits"},
+    { PROJECTOR_TYPE_KOKORO,            "kokoro"},
     { PROJECTOR_TYPE_MUSE_GLIMMER,      "muse-glimmer"},
     { PROJECTOR_TYPE_SENSENOVA_U1,      "sensenova_u1"},
     { PROJECTOR_TYPE_COHERE2V,          "cohere2v"},
