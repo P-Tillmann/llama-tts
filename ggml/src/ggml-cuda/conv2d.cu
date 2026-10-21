@@ -112,6 +112,49 @@ static void conv2d_cuda(const float * X_D, const T * K_D, float * Y_D, const con
     conv2d_kernel<T, whcn_layout><<<blocks, CUDA_CONV2D_BLOCK_SIZE, 0, st>>>(X_D, K_D, Y_D, P);
 }
 
+// col[k][j] for patch element k = (c_in, ky, kx) and output position p0 + j, zero outside the input
+static __global__ void conv2d_im2col_f32(const float * __restrict__ input, float * __restrict__ col, const conv_params P,
+                                         int n, int p0, int n_pos, int n_col) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_col) {
+        return;
+    }
+    // 32-bit index math, the caller checks the sizes
+    const int KW = P.KW, KH = P.KH, OW = P.OW, IW = P.IW, IH = P.IH;
+    const int j  = i % n_pos;
+    const int k  = i / n_pos;
+    const int kx = k % KW;
+    const int ky = (k / KW) % KH;
+    const int c  = k / (KW * KH);
+    const int p  = p0 + j;
+    const int x  = (p % OW) * int(P.ST_X) + kx * int(P.DL_X) - int(P.PD_X);
+    const int y  = (p / OW) * int(P.ST_Y) + ky * int(P.DL_Y) - int(P.PD_Y);
+    col[i] = x >= 0 && x < IW && y >= 0 && y < IH ? input[((n * int(P.IC) + c) * IH + y) * IW + x] : 0.0f;
+}
+
+// F32 kernels: im2col for a tile of output positions, then one SGEMM per tile writes Y[oc][p0 + j] in place
+static void conv2d_im2col_gemm_f32(ggml_backend_cuda_context & ctx, const float * X_D, const float * K_D, float * Y_D,
+                                   const conv_params & P, int64_t col_max) {
+    const int64_t n_k   = P.IC * P.KH * P.KW;
+    const int64_t n_out = P.OH * P.OW;
+    const int64_t tile  = std::min(n_out, col_max / n_k);
+
+    cudaStream_t   st       = ctx.stream();
+    cublasHandle_t cublas_h = ctx.cublas_handle();
+    ggml_cuda_pool_alloc<float> col(ctx.pool(), n_k * tile);
+    const float alpha = 1.0f, beta = 0.0f;
+    for (int64_t n = 0; n < P.B; ++n) {
+        for (int64_t p0 = 0; p0 < n_out; p0 += tile) {
+            const int64_t n_pos = std::min(tile, n_out - p0);
+            const int64_t n_col = n_k * n_pos;
+            conv2d_im2col_f32<<<(n_col + CUDA_CONV2D_BLOCK_SIZE - 1) / CUDA_CONV2D_BLOCK_SIZE, CUDA_CONV2D_BLOCK_SIZE, 0, st>>>(
+                X_D, col.get(), P, int(n), int(p0), int(n_pos), int(n_col));
+            CUBLAS_CHECK(cublasSgemm(cublas_h, CUBLAS_OP_N, CUBLAS_OP_N, int(n_pos), int(P.OC), int(n_k), &alpha, col.get(),
+                                     int(n_pos), K_D, int(n_k), &beta, Y_D + (n * P.OC * n_out + p0), int(n_out)));
+        }
+    }
+}
+
 static __global__ void
 conv2d_pad_f16(const float * input, half * output, int iw, int ih, int pw, int ph, int px, int py, int total) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -439,6 +482,14 @@ void ggml_cuda_op_conv2d(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
             conv2d_reduce_split_k<<<(total + 255) / 256, 256, 0, st>>>(result, Y_D, int(total), int(OC * OW * OH),
                                                                        split_k);
         }
+        return;
+    }
+
+    // the im2col buffer holds at most col_max floats, so long inputs run in several tiles
+    const int64_t col_max = 32 * 1024 * 1024;
+    if (kernel->type == GGML_TYPE_F32 && !small_conv && IC * KW * KH <= col_max && ggml_nelements(input) <= limit &&
+        total <= limit && OC <= limit) {
+        conv2d_im2col_gemm_f32(ctx, X_D, K_D, Y_D, params, col_max);
         return;
     }
 
