@@ -1,6 +1,7 @@
 #include "models.h"
 
-// activations are channel-major: ne0 = channels, ne1 = time
+// activations are channel-major (ne0 = channels, ne1 = time), except in the decoder:
+// its convs run on long sequences and use the time-major direct conv (ne0 = time)
 
 ggml_tensor * clip_graph_vits::conv1x1(ggml_tensor * x, const clip_vits::wb & c) const {
     ggml_tensor * cur = ggml_mul_mat(ctx0, c.w, x);
@@ -26,6 +27,24 @@ ggml_tensor * clip_graph_vits::conv1d(ggml_tensor * x, const clip_vits::wb & c, 
     return cur;
 }
 
+// time-major "same" conv, x [T, IC], w [K, IC, OC] -> [T, OC], no transposes
+// faster than conv_2d_direct for the small channel counts of the piper decoder
+ggml_tensor * clip_graph_vits::conv1d_tm(ggml_tensor * x, const clip_vits::wb & c, int dilation) const {
+    const int64_t K  = c.w->ne[0];
+    const int64_t IC = c.w->ne[1];
+    const int64_t OC = c.w->ne[2];
+    GGML_ASSERT(K % 2 == 1);
+    ggml_tensor * col = ggml_im2col(ctx0, c.w, x, 1, 0, dilation * (int) (K - 1) / 2, 0, dilation, 0, false, GGML_TYPE_F32);
+    col = ggml_reshape_2d(ctx0, col, col->ne[0], col->ne[1] * col->ne[2]);
+    // the weight is src1 here, which the CPU matmul needs in f32
+    ggml_tensor * w = c.w->type == GGML_TYPE_F32 ? c.w : ggml_cast(ctx0, c.w, GGML_TYPE_F32);
+    ggml_tensor * cur = ggml_mul_mat(ctx0, col, ggml_reshape_2d(ctx0, w, K * IC, OC));
+    if (c.b) {
+        cur = ggml_add(ctx0, cur, ggml_reshape_2d(ctx0, c.b, 1, OC));
+    }
+    return cur;
+}
+
 // depthwise "same" conv, w is [C, K]: one row of per-channel taps per k
 ggml_tensor * clip_graph_vits::conv1d_dw(ggml_tensor * x, const clip_vits::wb & c, int dilation) const {
     const int64_t C   = x->ne[0];
@@ -42,16 +61,16 @@ ggml_tensor * clip_graph_vits::conv1d_dw(ggml_tensor * x, const clip_vits::wb & 
     return ggml_add(ctx0, cur, c.b);
 }
 
-// w is [K, OC, IC], stride K/2 and padding (K - stride)/2 so T_out = T * stride (checked at conversion)
+// time-major in and out, w is [K, OC, IC], stride K/2 and padding (K - stride)/2 so T_out = T * stride (checked at conversion)
 ggml_tensor * clip_graph_vits::conv_transpose1d(ggml_tensor * x, const clip_vits::wb & c) const {
     const int64_t K  = c.w->ne[0];
     const int64_t OC = c.w->ne[1];
     const int64_t IC = c.w->ne[2];
     const int stride = K / 2;
     ggml_tensor * w2  = ggml_cont(ctx0, ggml_transpose(ctx0, ggml_reshape_2d(ctx0, c.w, K * OC, IC)));
-    ggml_tensor * cur = ggml_col2im_1d(ctx0, ggml_mul_mat(ctx0, w2, x), stride, OC, (K - stride) / 2);
-    cur = ggml_cont(ctx0, ggml_transpose(ctx0, cur));
-    return ggml_add(ctx0, cur, c.b);
+    ggml_tensor * xc  = ggml_cont(ctx0, ggml_transpose(ctx0, x));
+    ggml_tensor * cur = ggml_col2im_1d(ctx0, ggml_mul_mat(ctx0, w2, xc), stride, OC, (K - stride) / 2);
+    return ggml_add(ctx0, cur, ggml_reshape_2d(ctx0, c.b, 1, OC));
 }
 
 ggml_tensor * clip_graph_vits::layer_norm(ggml_tensor * x, const clip_vits::wb & n) const {
@@ -202,17 +221,17 @@ ggml_tensor * clip_graph_vits::wavenet(const clip_vits::coupling & c, ggml_tenso
     return out;
 }
 
-// hifi-gan residual block; dilations are fixed by the piper configs (checked at conversion)
+// hifi-gan residual block (time-major); dilations are fixed by the piper configs (checked at conversion)
 ggml_tensor * clip_graph_vits::resblock(ggml_tensor * x, const clip_vits::resblock & rb, int j) const {
     static const int dil_1[3]    = { 1, 3, 5 };
     static const int dil_2[3][2] = { { 1, 2 }, { 2, 6 }, { 3, 12 } };
     const bool type_1 = !rb.c2.empty();
     for (size_t d = 0; d < rb.c1.size(); d++) {
         ggml_tensor * t = ggml_leaky_relu(ctx0, x, 0.1f, false);
-        t = conv1d(t, rb.c1[d], type_1 ? dil_1[d] : dil_2[j][d]);
+        t = conv1d_tm(t, rb.c1[d], type_1 ? dil_1[d] : dil_2[j][d]);
         if (type_1) {
             t = ggml_leaky_relu(ctx0, t, 0.1f, false);
-            t = conv1d(t, rb.c2[d], 1);
+            t = conv1d_tm(t, rb.c2[d], 1);
         }
         x = ggml_add(ctx0, x, t);
     }
@@ -319,11 +338,12 @@ void clip_graph_vits::build_wave(ggml_tensor * g) {
     z = ggml_concat(ctx0, a, b, 0);
     cb(z, "z", -1);
 
-    // hifi-gan
-    ggml_tensor * x = conv1d(z, vits.dec_conv_pre, 1);
+    // hifi-gan, time-major
+    ggml_tensor * x = conv1d_tm(ggml_cont(ctx0, ggml_transpose(ctx0, z)), vits.dec_conv_pre, 1);
     cb(x, "dec_pre", -1);
     if (g && vits.dec_cond.w) {
-        x = ggml_add(ctx0, x, conv1x1(g, vits.dec_cond));
+        ggml_tensor * gc = conv1x1(g, vits.dec_cond);
+        x = ggml_add(ctx0, x, ggml_reshape_2d(ctx0, gc, 1, gc->ne[0]));
     }
     const int n_kernels = (int) (vits.dec_res.size() / vits.dec_ups.size());
     for (size_t i = 0; i < vits.dec_ups.size(); i++) {
@@ -339,7 +359,7 @@ void clip_graph_vits::build_wave(ggml_tensor * g) {
         cb(x, "dec_stage", (int) i);
     }
     x = ggml_leaky_relu(ctx0, x, 0.01f, false);
-    x = conv1d(x, { vits.dec_conv_post_w, nullptr }, 1);
+    x = conv1d_tm(x, { vits.dec_conv_post_w, nullptr }, 1);
     cb(x, "dec_post", -1);
     x = ggml_tanh(ctx0, x);
     ggml_set_name(x, "out_audio");

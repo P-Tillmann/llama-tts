@@ -127,14 +127,15 @@ ggml_tensor * clip_graph_kokoro::style(int64_t offset) const {
     return ggml_cont(ctx0, ggml_view_2d(ctx0, st, 128, 1, st->nb[1], offset * sizeof(float)));
 }
 
-// x [T, IC] time-major, w [K, IC, OC] -> [T', OC]; f32 im2col and f32 weights keep full precision
+// x [T, IC] time-major, w [K, IC, OC] -> [T', OC]
+// conv_2d_direct with H = 1 runs im2col in tiles, so long inputs do not need a full im2col buffer
 ggml_tensor * clip_graph_kokoro::conv1d_tm(ggml_tensor * x, const clip_kokoro::wb & c, int stride, int pad, int dilation) const {
     const int64_t K  = c.w->ne[0];
     const int64_t IC = c.w->ne[1];
     const int64_t OC = c.w->ne[2];
-    ggml_tensor * col = ggml_im2col(ctx0, c.w, x, stride, 0, pad, 0, dilation, 0, false, GGML_TYPE_F32);
-    col = ggml_reshape_2d(ctx0, col, col->ne[0], col->ne[1] * col->ne[2]);
-    ggml_tensor * cur = ggml_mul_mat(ctx0, col, ggml_reshape_2d(ctx0, c.w, K * IC, OC));
+    ggml_tensor * cur = ggml_conv_2d_direct(ctx0, ggml_reshape_4d(ctx0, c.w, K, 1, IC, OC), ggml_reshape_4d(ctx0, x, x->ne[0], 1, IC, 1),
+                                            stride, 1, pad, 0, dilation, 1);
+    cur = ggml_reshape_2d(ctx0, cur, cur->ne[0], OC);
     if (c.b) {
         cur = ggml_add(ctx0, cur, ggml_reshape_2d(ctx0, c.b, 1, OC));
     }
