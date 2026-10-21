@@ -500,7 +500,6 @@ extern "C" {
         GGML_OP_SUB,
         GGML_OP_MUL,
         GGML_OP_DIV,
-        GGML_OP_ATAN2,
         GGML_OP_SQR,
         GGML_OP_SQRT,
         GGML_OP_LOG,
@@ -602,6 +601,8 @@ extern "C" {
         GGML_OP_OPT_STEP_SGD,
 
         GGML_OP_GLU,
+
+        GGML_OP_ATAN2,
 
         GGML_OP_COUNT,
     };

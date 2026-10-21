@@ -1010,7 +1010,6 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "SUB",
     "MUL",
     "DIV",
-    "ATAN2",
     "SQR",
     "SQRT",
     "LOG",
@@ -1112,6 +1111,8 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "OPT_STEP_SGD",
 
     "GLU",
+
+    "ATAN2",
 };
 
 static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
@@ -1127,7 +1128,6 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "x-y",
     "x*y",
     "x/y",
-    "atan2(x,y)",
     "x^2",
     "√x",
     "log(x)",
@@ -1229,6 +1229,8 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "sgd(x)",
 
     "glu(x)",
+
+    "atan2(x,y)",
 };
 
 static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
