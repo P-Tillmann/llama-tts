@@ -10532,6 +10532,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_bin_bcast(ggml_sub_inplace, GGML_TYPE_F32, {16, 5, 4, 3}, {1, 1, 1, 1}, 16));
     test_cases.emplace_back(new test_bin_bcast(ggml_div_inplace, GGML_TYPE_F32, {16, 5, 4, 3}, {1, 1, 1, 1}, 16));
 
+    for (ggml_type type : {GGML_TYPE_F32, GGML_TYPE_F16}) {
+        test_cases.emplace_back(new test_bin_bcast(ggml_atan2, type, {10, 5, 4, 3}, {1, 1, 1, 1}));
+        test_cases.emplace_back(new test_bin_bcast(ggml_atan2, type, {10, 5, 4, 3}, {2, 2, 1, 1}));
+        test_cases.emplace_back(new test_bin_bcast(ggml_atan2, type, {1, 1, 320, 320}, {1, 1, 1, 1}));
+    }
+
     // BF16 activations with F32 weights
     for (auto op : {ggml_add, ggml_sub, ggml_mul, ggml_div}) {
         test_cases.emplace_back(new test_bin_bcast(op, GGML_TYPE_BF16, {10, 5, 4, 3}, {1, 1, 1, 1}, 1, false, false, GGML_TYPE_F32));
