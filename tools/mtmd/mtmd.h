@@ -420,12 +420,19 @@ enum mtmd_gen_audio_type {
     MTMD_GEN_AUDIO_TYPE_NONE, // not supported
     MTMD_GEN_AUDIO_TYPE_QWEN3TTS,
     MTMD_GEN_AUDIO_TYPE_POCKETTTS,
+    MTMD_GEN_AUDIO_TYPE_VITS, // symbol ids (phonemes) to PCM in one GEN_WAV call, no backbone
 };
 
 struct mtmd_gen_audio_info {
     enum mtmd_gen_audio_type type;
     int32_t sample_rate; // in Hz, for example 24000 for qwen3tts
     const char * model_variant; // name of the weight variant, can be nullptr if not applicable
+
+    // for pipelines that take symbol ids as GEN_WAV codes, 0 / nullptr otherwise
+    int32_t              n_symbols;
+    const char * const * symbols;    // input symbol (e.g. a phoneme) per id, can be empty for unused ids
+    int32_t              n_speakers; // 1 for single-speaker models
+    const char * const * speakers;   // speaker name per id, nullptr if the model has none
 };
 
 MTMD_API struct mtmd_gen_audio_info mtmd_gen_audio_get_info(const mtmd_context * ctx);
@@ -454,6 +461,12 @@ struct mtmd_gen_inp {
     size_t    n_codes;
     const float * feats;
     size_t        n_feats;
+
+    // for MTMD_GEN_PROCESS_TYPE_GEN_WAV with symbol ids (vits)
+    int32_t speaker;       // -1 for the default speaker
+    float   length_scale;  // > 1 is slower, 0 for the model default
+    float   noise_scale;   // negative for the model default
+    float   noise_scale_w; // duration noise, negative for the model default
 };
 
 struct mtmd_gen_out {

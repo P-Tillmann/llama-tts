@@ -524,6 +524,8 @@ struct mtmd_context {
 
     // generation context
     struct clip_ctx * ctx_gen_a; // audio
+    std::vector<const char *> gen_symbols;  // c strings of the clip hparams, for mtmd_gen_audio_info
+    std::vector<const char *> gen_speakers;
 
     bool print_timings;
     int n_threads;
@@ -531,7 +533,7 @@ struct mtmd_context {
     const int n_embd_text = -1; // -1 means llm context not provided, skip checking this
     const llama_vocab * vocab = nullptr; // can be nullptr if text_model is not provided
     const llama_model * text_model = nullptr; // for the token embeddings of mtmd_audio_stream
-    mtmd_pos_type pos_type;
+    mtmd_pos_type pos_type = MTMD_POS_TYPE_NORMAL;
 
     // these are not token, but strings used to mark the beginning and end of image/audio embeddings
     std::string img_beg;
@@ -624,7 +626,7 @@ struct mtmd_context {
         ctx_v = res.ctx_v;
         ctx_a = res.ctx_a;
         ctx_gen_a = res.ctx_gen_a;
-        if (!ctx_v && !ctx_a) {
+        if (!ctx_v && !ctx_a && !ctx_gen_a) {
             throw std::runtime_error(string_format("Failed to load CLIP model from %s\n", mmproj_fname));
         }
 
@@ -641,14 +643,22 @@ struct mtmd_context {
 
         // since we already validate n_embd of vision and audio mmproj,
         // we can safely assume that they are the same
-        int n_embd_clip = clip_n_mmproj_embd(ctx_v ? ctx_v : ctx_a);
-        if (n_embd_text > 0 && n_embd_text != n_embd_clip) {
+        int n_embd_clip = ctx_v || ctx_a ? clip_n_mmproj_embd(ctx_v ? ctx_v : ctx_a) : -1;
+        if (n_embd_text > 0 && n_embd_clip > 0 && n_embd_text != n_embd_clip) {
             throw std::runtime_error(string_format(
                 "mismatch between text model (n_embd = %d) and mmproj (n_embd = %d)\n"
                 "hint: you may be using wrong mmproj\n",
                 n_embd_text, n_embd_clip));
         }
         if (ctx_gen_a) {
+            for (const auto & sym : clip_get_hparams(ctx_gen_a)->gen_symbols) {
+                gen_symbols.push_back(sym.c_str());
+            }
+            for (const auto & spk : clip_get_hparams(ctx_gen_a)->gen_speakers) {
+                gen_speakers.push_back(spk.c_str());
+            }
+        }
+        if (ctx_gen_a && clip_get_projector_type(ctx_gen_a) != PROJECTOR_TYPE_VITS) {
             int n_embd_gen = clip_n_mmproj_embd(ctx_gen_a);
             if (n_embd_text > 0 && n_embd_text != n_embd_gen) {
                 throw std::runtime_error(string_format(
@@ -2077,6 +2087,16 @@ mtmd_gen_audio_info mtmd_gen_audio_get_info(const mtmd_context * ctx) {
             info.type = MTMD_GEN_AUDIO_TYPE_POCKETTTS;
             info.sample_rate = 24000;
             break;
+        case PROJECTOR_TYPE_VITS:
+            {
+                const auto * hparams = clip_get_hparams(ctx->ctx_gen_a);
+                info.type        = MTMD_GEN_AUDIO_TYPE_VITS;
+                info.sample_rate = hparams->audio_sample_rate;
+                info.n_symbols   = (int32_t) ctx->gen_symbols.size();
+                info.symbols     = ctx->gen_symbols.data();
+                info.n_speakers  = std::max<int32_t>(1, (int32_t) clip_n_gen_speakers(ctx->ctx_gen_a));
+                info.speakers    = ctx->gen_speakers.empty() ? nullptr : ctx->gen_speakers.data();
+            } break;
         default:
             info.type = MTMD_GEN_AUDIO_TYPE_NONE;
             break;
@@ -2087,6 +2107,10 @@ mtmd_gen_audio_info mtmd_gen_audio_get_info(const mtmd_context * ctx) {
 mtmd_gen_inp mtmd_gen_inp_default(const mtmd_context * ctx) {
     mtmd_gen_inp inp{};
     inp.type = MTMD_GEN_PROCESS_TYPE_GEN_CODE;
+    inp.speaker       = -1;
+    inp.length_scale  = 0.0f;
+    inp.noise_scale   = -1.0f;
+    inp.noise_scale_w = -1.0f;
     if (!ctx->ctx_gen_a) {
         return inp;
     }
@@ -2246,6 +2270,10 @@ static int32_t mtmd_gen_audio_process_impl(mtmd_context * ctx, mtmd_gen_state * 
     params.feats       = has_feats ? &in_feats : nullptr;
     params.out_audio   = &state->out_audio;
     params.gen_state   = state->clip_state;
+    params.speaker       = inp->speaker;
+    params.length_scale  = inp->length_scale;
+    params.noise_scale   = inp->noise_scale;
+    params.noise_scale_w = inp->noise_scale_w;
 
     if (!clip_encode(ctx_clip, &params)) {
         LOG_ERR("%s: clip_encode failed (code2wav)\n", __func__);
