@@ -111,6 +111,7 @@
 #define KEY_GEN_AUDIO_NOISE_SCALE  "clip.gen.audio.noise_scale"
 #define KEY_GEN_AUDIO_NOISE_SCALE_W "clip.gen.audio.noise_scale_w"
 #define KEY_GEN_AUDIO_LENGTH_SCALE "clip.gen.audio.length_scale"
+#define KEY_GEN_AUDIO_ESPEAK_VOICE "clip.gen.audio.espeak_voice"
 #define KEY_AUDIO_SUBSMPL_FACTOR   "clip.audio.subsampling_factor"
 
 //

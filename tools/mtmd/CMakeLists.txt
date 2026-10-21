@@ -94,6 +94,11 @@ if (MTMD_VIDEO)
     target_compile_definitions(mtmd PRIVATE MTMD_VIDEO)
 endif()
 
+# external phonemizer for text to speech
+if (LLAMA_SUBPROCESS)
+    target_compile_definitions(mtmd PRIVATE MTMD_SUBPROCESS)
+endif()
+
 if (BUILD_SHARED_LIBS)
     set_target_properties     (mtmd PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_compile_definitions(mtmd PRIVATE LLAMA_BUILD)

@@ -98,6 +98,8 @@ std::vector<uint32_t> unicode_cpts_from_utf8(const std::string & utf8);
 
 std::vector<uint32_t> unicode_cpts_normalize_nfd(const std::vector<uint32_t> & cpts);
 std::vector<uint32_t> unicode_cpts_normalize_nfc(const std::vector<uint32_t> & cpts);
+// full canonical decomposition (NFD), unlike unicode_cpts_normalize_nfd which only maps to base characters
+std::vector<uint32_t> unicode_cpts_decompose_canonical(const std::vector<uint32_t> & cpts);
 
 unicode_cpt_flags unicode_cpt_flags_from_cpt (uint32_t cpt);
 unicode_cpt_flags unicode_cpt_flags_from_utf8(const std::string & utf8);

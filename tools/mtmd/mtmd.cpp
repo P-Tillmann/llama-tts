@@ -2089,6 +2089,7 @@ mtmd_gen_audio_info mtmd_gen_audio_get_info(const mtmd_context * ctx) {
                 info.symbols     = ctx->gen_symbols.data();
                 info.n_speakers  = std::max<int32_t>(1, (int32_t) clip_n_gen_speakers(ctx->ctx_gen_a));
                 info.speakers    = ctx->gen_speakers.empty() ? nullptr : ctx->gen_speakers.data();
+                info.espeak_voice = hparams->gen_espeak_voice.empty() ? nullptr : hparams->gen_espeak_voice.c_str();
             } break;
         default:
             info.type = MTMD_GEN_AUDIO_TYPE_NONE;
