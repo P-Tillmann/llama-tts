@@ -428,6 +428,7 @@ struct clip_graph_vits : clip_graph {
     ggml_tensor * conv1x1(ggml_tensor * x, const clip_vits::wb & c) const;
     ggml_tensor * conv1d(ggml_tensor * x, const clip_vits::wb & c, int dilation) const;
     ggml_tensor * conv1d_dw(ggml_tensor * x, const clip_vits::wb & c, int dilation) const;
+    ggml_tensor * conv1d_tm(ggml_tensor * x, const clip_vits::wb & c, int dilation) const;
     ggml_tensor * conv_transpose1d(ggml_tensor * x, const clip_vits::wb & c) const;
     ggml_tensor * layer_norm(ggml_tensor * x, const clip_vits::wb & n) const;
     ggml_tensor * rows(ggml_tensor * x, int64_t i0, int64_t n) const;
