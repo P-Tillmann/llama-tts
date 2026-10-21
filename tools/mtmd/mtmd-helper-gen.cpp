@@ -79,8 +79,8 @@ static bool write_wav16(std::vector<char> & buf, const std::vector<float> & pcm,
 class mtmd_gen_audio_pipeline {
 public:
     mtmd_gen_audio_pipeline(llama_context * lctx, mtmd_context * mctx)
-        : lctx(lctx), mctx(mctx), model(llama_get_model(lctx)), vocab(llama_model_get_vocab(model)),
-          n_embd(llama_model_n_embd(model)), info(mtmd_gen_audio_get_info(mctx)) {}
+        : lctx(lctx), mctx(mctx), model(lctx ? llama_get_model(lctx) : nullptr), vocab(model ? llama_model_get_vocab(model) : nullptr),
+          n_embd(model ? llama_model_n_embd(model) : 0), info(mtmd_gen_audio_get_info(mctx)) {}
     virtual ~mtmd_gen_audio_pipeline() = default;
 
     virtual void reset() = 0;
@@ -991,12 +991,148 @@ private:
     std::vector<char> out_buf;
 };
 
+// VITS (Piper): no backbone, each utterance is synthesized by one GEN_WAV call in step_prompt()
+// for now the prompt is a phoneme string, one utterance per line
+class vits_gen_audio_pipeline : public mtmd_gen_audio_pipeline {
+public:
+    using mtmd_gen_audio_pipeline::mtmd_gen_audio_pipeline;
+
+    void reset() override {
+        utterances.clear();
+        n_done = 0;
+        audio_pcm.clear();
+        out_buf.clear();
+    }
+
+    int32_t set_input(const mtmd_helper_gen_audio_inp * inp) override {
+        reset();
+        seed       = inp->seed;
+        speaker_id = inp->speaker_id;
+        speed      = inp->speed;
+        out_type   = inp->out_type;
+
+        std::unordered_map<std::string, int32_t> sym_id;
+        for (int32_t i = 0; i < info.n_symbols; i++) {
+            if (info.symbols[i][0] != '\0') {
+                sym_id[info.symbols[i]] = i;
+            }
+        }
+        const char * bos = "^";
+        const char * eos = "$";
+        const char * pad = "_";
+        if (!sym_id.count(bos) || !sym_id.count(eos) || !sym_id.count(pad)) {
+            LOG_ERR("mtmd_helper_gen_audio: model has no ^ $ _ symbols\n");
+            return 1;
+        }
+
+        // ids are ^ _ (p _)* $, one id per code point
+        const std::string prompt(inp->prompt, inp->prompt_len);
+        size_t pos = 0;
+        while (pos <= prompt.size()) {
+            size_t end = prompt.find('\n', pos);
+            if (end == std::string::npos) {
+                end = prompt.size();
+            }
+            const std::string line = prompt.substr(pos, end - pos);
+            pos = end + 1;
+            std::vector<int32_t> ids = { sym_id[bos], sym_id[pad] };
+            for (size_t i = 0; i < line.size(); ) {
+                size_t len = utf8_len(line[i]);
+                const std::string cp = line.substr(i, len);
+                i += len;
+                auto it = sym_id.find(cp);
+                if (it == sym_id.end()) {
+                    if (cp != "\r") {
+                        LOG_WRN("mtmd_helper_gen_audio: skipping unknown phoneme '%s'\n", cp.c_str());
+                    }
+                    continue;
+                }
+                ids.push_back(it->second);
+                ids.push_back(sym_id[pad]);
+            }
+            ids.push_back(sym_id[eos]);
+            if (ids.size() > 3) {
+                utterances.push_back(std::move(ids));
+            }
+        }
+        if (utterances.empty()) {
+            LOG_ERR("mtmd_helper_gen_audio: no phonemes in the prompt\n");
+            return 1;
+        }
+        return 0;
+    }
+
+    int32_t step_prompt(int32_t /*n_batch*/) override {
+        if (n_done >= utterances.size()) {
+            return 0;
+        }
+        auto & ids = utterances[n_done];
+        mtmd_gen_inp inp = mtmd_gen_inp_default(mctx);
+        inp.type         = MTMD_GEN_PROCESS_TYPE_GEN_WAV;
+        inp.codes        = ids.data();
+        inp.n_codes      = ids.size();
+        inp.seed         = seed;
+        inp.speaker      = speaker_id;
+        inp.length_scale = speed > 0.0f ? 1.0f / speed : 0.0f;
+        mtmd_gen_out out{};
+        if (mtmd_gen_audio_process(mctx, &inp, &out) != 0) {
+            return -1;
+        }
+        audio_pcm.insert(audio_pcm.end(), out.audio, out.audio + out.n_samples);
+        n_done++;
+        return (int32_t) (utterances.size() - n_done);
+    }
+
+    int32_t step_gen(llama_token /*sampled*/, const float * /*h_state_in*/, const float ** h_state_out, bool * out_stop) override {
+        *h_state_out = nullptr;
+        *out_stop    = true;
+        return 0;
+    }
+
+    int32_t get_output(int32_t * out_sample_rate, const char ** out_data, size_t * out_data_len, int64_t * out_n_samples) override {
+        *out_sample_rate = info.sample_rate;
+        if (out_n_samples) {
+            *out_n_samples = (int64_t) audio_pcm.size();
+        }
+        if (out_type == MTMD_HELPER_GEN_AUDIO_OUTTYPE_PCM) {
+            *out_data     = (const char *) audio_pcm.data();
+            *out_data_len = audio_pcm.size() * sizeof(float);
+            return 0;
+        }
+        out_buf.clear();
+        if (!write_wav16(out_buf, audio_pcm, info.sample_rate)) {
+            LOG_ERR("mtmd_helper_gen_audio: output too large for WAV\n");
+            return 1;
+        }
+        *out_data     = out_buf.data();
+        *out_data_len = out_buf.size();
+        return 0;
+    }
+
+private:
+    static size_t utf8_len(char c) {
+        const unsigned char u = (unsigned char) c;
+        return u < 0x80 ? 1 : (u >> 5) == 0x6 ? 2 : (u >> 4) == 0xE ? 3 : (u >> 3) == 0x1E ? 4 : 1;
+    }
+
+    std::vector<std::vector<int32_t>> utterances;
+    size_t   n_done     = 0;
+    uint32_t seed       = UINT32_MAX;
+    int32_t  speaker_id = 0;
+    float    speed      = 0.0f;
+    std::vector<float> audio_pcm;
+    mtmd_helper_gen_audio_outtype out_type = MTMD_HELPER_GEN_AUDIO_OUTTYPE_WAV;
+    std::vector<char> out_buf;
+};
+
 static std::unique_ptr<mtmd_gen_audio_pipeline> make_pipeline(llama_context * lctx, mtmd_context * mctx) {
     switch (mtmd_gen_audio_get_info(mctx).type) {
         case MTMD_GEN_AUDIO_TYPE_QWEN3TTS:
             return std::unique_ptr<mtmd_gen_audio_pipeline>(new qwen3tts_gen_audio_pipeline(lctx, mctx));
         case MTMD_GEN_AUDIO_TYPE_POCKETTTS:
             return std::unique_ptr<mtmd_gen_audio_pipeline>(new pockettts_gen_audio_pipeline(lctx, mctx));
+        case MTMD_GEN_AUDIO_TYPE_VITS:
+            return std::unique_ptr<mtmd_gen_audio_pipeline>(new vits_gen_audio_pipeline(lctx, mctx));
         default:
             return nullptr;
     }

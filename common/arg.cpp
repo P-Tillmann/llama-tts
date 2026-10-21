@@ -915,6 +915,8 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
         // model is required (except for server)
         // TODO @ngxson : maybe show a list of available models in CLI in this case
         bool can_skip_model = params.usage || params.completion || !params.server_base.empty();
+        // standalone audio generators (no backbone) run from the mmproj alone
+        can_skip_model = can_skip_model || (ctx_arg.ex == LLAMA_EXAMPLE_TTS && !params.mmproj.path.empty());
         if (!can_skip_model && params.model.path.empty()) {
             throw std::invalid_argument("error: --model is required\n");
         }
@@ -4495,6 +4497,20 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "see tts/README.md for per-model usage notes",
         [](common_params & params, const std::string & value) {
             params.tts_lang = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_TTS}));
+    add_opt(common_arg(
+        {"--tts-speaker-id"}, "N",
+        string_format("speaker id for multi-speaker models (default: %d)", params.tts_speaker_id),
+        [](common_params & params, int value) {
+            params.tts_speaker_id = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_TTS}));
+    add_opt(common_arg(
+        {"--tts-speed"}, "F",
+        "speaking rate, > 1 is faster (default: model default)",
+        [](common_params & params, const std::string & value) {
+            params.tts_speed = std::stof(value);
         }
     ).set_examples({LLAMA_EXAMPLE_TTS}));
     add_opt(common_arg(

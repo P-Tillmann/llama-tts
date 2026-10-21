@@ -217,6 +217,9 @@ struct mtmd_helper_gen_audio_inp {
     uint32_t seed; // UINT32_MAX for random (default: random)
 
     enum mtmd_helper_gen_audio_outtype out_type;
+
+    int32_t speaker_id; // for multi-speaker models, 0 = first speaker
+    float   speed;      // speaking rate, 0 = model default
 };
 
 MTMD_API mtmd_helper_gen_audio * mtmd_helper_gen_audio_init(
