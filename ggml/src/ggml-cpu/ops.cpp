@@ -4274,6 +4274,24 @@ void ggml_compute_forward_rms_norm(
 // Fused RMS_NORM + MUL: computes dst = rms_norm(src0) * src1 in a single pass.
 // This avoids materializing the intermediate rms_norm result in memory.
 // snake fused: y = x + sin(a*x)^2 * inv_b, one channel per row; the op order matches the unfused graph
+#if defined(__AVX2__) && defined(__FMA__)
+// sin(y)^2 for |y| < 2^16: sin^2 has period pi, y is reduced to [-pi/2, pi/2] with a two-part pi, then an odd degree 11 polynomial
+// max abs error about 1.2e-7
+inline static __m256 ggml_v_sin2(__m256 y) {
+    const __m256 k = _mm256_round_ps(_mm256_mul_ps(y, _mm256_set1_ps(0.318309886f)), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+    __m256 r = _mm256_fnmadd_ps(k, _mm256_set1_ps(3.14159274101257324f), y);
+    r = _mm256_fnmadd_ps(k, _mm256_set1_ps(-8.74227766e-8f), r);
+    const __m256 r2 = _mm256_mul_ps(r, r);
+    __m256 p = _mm256_set1_ps(-2.50521084e-8f);
+    p = _mm256_fmadd_ps(p, r2, _mm256_set1_ps(2.75573192e-6f));
+    p = _mm256_fmadd_ps(p, r2, _mm256_set1_ps(-1.98412698e-4f));
+    p = _mm256_fmadd_ps(p, r2, _mm256_set1_ps(8.33333333e-3f));
+    p = _mm256_fmadd_ps(p, r2, _mm256_set1_ps(-1.66666667e-1f));
+    const __m256 s = _mm256_fmadd_ps(_mm256_mul_ps(p, r2), r, r);
+    return _mm256_mul_ps(s, s);
+}
+#endif
+
 void ggml_compute_forward_snake_fused(
         const ggml_compute_params * params,
         const ggml_tensor * x,
@@ -4289,7 +4307,26 @@ void ggml_compute_forward_snake_fused(
         float * py = (float *) ((char *) dst->data + r * dst->nb[1]);
         const float ar = pa[r];
         const float br = pb[r];
-        for (int64_t i = 0; i < n; i++) {
+        int64_t i = 0;
+#if defined(__AVX2__) && defined(__FMA__)
+        const __m256 va  = _mm256_set1_ps(ar);
+        const __m256 vb  = _mm256_set1_ps(br);
+        const __m256 lim = _mm256_set1_ps(65536.0f);
+        for (; i + 8 <= n; i += 8) {
+            const __m256 vx = _mm256_loadu_ps(px + i);
+            const __m256 y  = _mm256_mul_ps(vx, va);
+            // large, inf or nan arguments take the sinf path below
+            if (_mm256_movemask_ps(_mm256_cmp_ps(_mm256_andnot_ps(_mm256_set1_ps(-0.0f), y), lim, _CMP_LT_OQ)) != 0xFF) {
+                for (int64_t j = i; j < i + 8; j++) {
+                    const float s = sinf(px[j] * ar);
+                    py[j] = px[j] + s * s * br;
+                }
+                continue;
+            }
+            _mm256_storeu_ps(py + i, _mm256_fmadd_ps(ggml_v_sin2(y), vb, vx));
+        }
+#endif
+        for (; i < n; i++) {
             const float s  = sinf(px[i] * ar);
             const float s2 = s * s;
             py[i] = px[i] + s2 * br;
