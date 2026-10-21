@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <map>
+#include <string>
 #include <vector>
 
 // Reserve a new compute graph. It is valid until the next call to llama_graph_reserve.
@@ -164,3 +165,6 @@ LLAMA_API uint32_t llama_model_get_tok_embd_rows(const struct llama_model * mode
 
 // realtime models: number of tokens the output lags behind the audio input, used by mtmd; 0 if not applicable
 LLAMA_API uint32_t llama_model_n_tokens_delay(const struct llama_model * model);
+
+// canonical decomposition (NFD) of UTF-8 text, e.g. for phonemizer output
+LLAMA_API std::string llama_utf8_normalize_nfd(const std::string & text);

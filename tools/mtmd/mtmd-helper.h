@@ -221,6 +221,10 @@ struct mtmd_helper_gen_audio_inp {
 
     int32_t speaker_id; // for multi-speaker models, 0 = first speaker
     float   speed;      // speaking rate, 0 = model default
+
+    // for models that take phonemes: path of the external phonemizer (e.g. tts-phonemizer-espeak)
+    // NULL to pass the prompt as phonemes, one utterance per line
+    const char * phonemizer;
 };
 
 MTMD_API struct mtmd_helper_gen_audio_inp mtmd_helper_gen_audio_inp_default(void);

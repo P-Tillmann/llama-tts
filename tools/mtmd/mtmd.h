@@ -433,6 +433,7 @@ struct mtmd_gen_audio_info {
     const char * const * symbols;    // input symbol (e.g. a phoneme) per id, can be empty for unused ids
     int32_t              n_speakers; // 1 for single-speaker models
     const char * const * speakers;   // speaker name per id, nullptr if the model has none
+    const char *         espeak_voice; // espeak-ng voice of the symbols (e.g. "en-us"), nullptr if they are not espeak phonemes
 };
 
 MTMD_API struct mtmd_gen_audio_info mtmd_gen_audio_get_info(const mtmd_context * ctx);

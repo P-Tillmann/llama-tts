@@ -59,3 +59,25 @@ The [upstream repository](https://huggingface.co/kyutai/pocket-tts) holds one co
 python convert_hf_to_gguf.py path/to/pocket-tts/languages/english --outfile pocket-tts.gguf
 python convert_hf_to_gguf.py path/to/pocket-tts/languages/english --mmproj --outfile mmproj-pocket-tts.gguf
 ```
+
+## Piper (VITS)
+
+Piper voices run from the mmproj alone, there is no backbone model (`-m` is not needed).
+
+Available params:
+- `-p` is a phoneme string for now (IPA, as produced by espeak-ng for the voice), one utterance per line. Text input needs a phonemizer and comes later
+- `--tts-speaker-id` selects the speaker of a multi-speaker voice (default: 0)
+- `--tts-speed` changes the speaking rate, > 1 is faster (default: from the voice config)
+- `--seed` fixes the noise of the duration predictor and the prior
+
+Example usage:
+
+```sh
+llama-tts -mm piper-en_US-lessac-medium.gguf \
+    -p "həlˈoʊ wˈɜːld." \
+    --output out.wav
+```
+
+**Note for GGUF conversion:**
+
+A voice is an `.onnx` file plus its `.onnx.json` config from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices). The license is per voice, see its `MODEL_CARD`. The converter is not part of `convert_hf_to_gguf.py` yet.

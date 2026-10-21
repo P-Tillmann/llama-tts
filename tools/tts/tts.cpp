@@ -134,6 +134,7 @@ int main(int argc, char ** argv) {
     inp.seed        = params.sampling.seed;
     inp.speaker_id  = params.tts_speaker_id;
     inp.speed       = params.tts_speed;
+    inp.phonemizer  = params.tts_phonemizer.empty() ? nullptr : params.tts_phonemizer.c_str();
 
     //
     // stage 1: process prompt via backbone model, generate semantic representation

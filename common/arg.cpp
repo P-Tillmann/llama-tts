@@ -4514,6 +4514,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_TTS}));
     add_opt(common_arg(
+        {"--tts-phonemizer"}, "FNAME",
+        "external phonemizer for models that take phonemes (e.g. tts-phonemizer-espeak)\n"
+        "without it, the prompt is passed as phonemes",
+        [](common_params & params, const std::string & value) {
+            params.tts_phonemizer = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_TTS}));
+    add_opt(common_arg(
         {"--tts-speaker-file"}, "FNAME",
         "speaker file path for audio generation",
         [](common_params & params, const std::string & value) {

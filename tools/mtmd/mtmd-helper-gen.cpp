@@ -17,6 +17,10 @@
 #error "mtmd-helper is a public library outside of mtmd. it must not include internal headers"
 #endif
 
+#ifdef MTMD_SUBPROCESS
+#include "sheredom/subprocess.h"
+#endif
+
 //
 // Audio generation helpers
 //
@@ -1076,8 +1080,172 @@ private:
     bool   wav_header_sent = false;
 };
 
+// external text to phoneme process, see tts-phonemizer-espeak for the protocol
+// it is GPL software (espeak-ng), so it runs as a separate program and is never linked
+class gen_audio_phonemizer {
+public:
+    struct clause {
+        int         terminator;   // espeak clause terminator & 0xFFFFF
+        bool        sentence_end;
+        std::string phonemes;
+    };
+
+    ~gen_audio_phonemizer() {
+        stop();
+    }
+
+#ifdef MTMD_SUBPROCESS
+    bool run(const std::string & path, const std::string & voice, const std::string & text, std::vector<clause> & out) {
+        if (!start(path)) {
+            return false;
+        }
+        std::string req = voice + "\t";
+        for (char c : text) {
+            switch (c) {
+                case '\\': req += "\\\\"; break;
+                case '\n': req += "\\n";  break;
+                case '\t': req += "\\t";  break;
+                case '\r':                break;
+                default:   req += c;      break;
+            }
+        }
+        req += "\n";
+        FILE * f_in  = subprocess_stdin(&proc);
+        FILE * f_out = subprocess_stdout(&proc);
+        if (!subprocess_alive(&proc) || fwrite(req.data(), 1, req.size(), f_in) != req.size() || fflush(f_in) != 0) {
+            LOG_ERR("mtmd_helper_gen_audio: phonemizer is not running\n");
+            stop();
+            return false;
+        }
+        out.clear();
+        std::string line;
+        while (read_line(f_out, line)) {
+            if (line == "END") {
+                return true;
+            }
+            if (line.rfind("ERR\t", 0) == 0) {
+                LOG_ERR("mtmd_helper_gen_audio: phonemizer error: %s\n", line.c_str() + 4);
+                continue;
+            }
+            const size_t t1 = line.find('\t');
+            const size_t t2 = t1 == std::string::npos ? t1 : line.find('\t', t1 + 1);
+            if (t2 == std::string::npos) {
+                break;
+            }
+            out.push_back({ atoi(line.c_str()), line[t1 + 1] == '1', line.substr(t2 + 1) });
+        }
+        LOG_ERR("mtmd_helper_gen_audio: unexpected end of phonemizer output\n");
+        stop();
+        return false;
+    }
+
+private:
+    bool start(const std::string & path) {
+        if (running && path == cur_path) {
+            return true;
+        }
+        stop();
+        const char * argv[] = { path.c_str(), nullptr };
+        const int opts = subprocess_option_inherit_environment | subprocess_option_search_user_path | subprocess_option_no_window;
+        if (subprocess_create(argv, opts, &proc) != 0) {
+            LOG_ERR("mtmd_helper_gen_audio: failed to start phonemizer %s\n", path.c_str());
+            return false;
+        }
+        running  = true;
+        cur_path = path;
+        return true;
+    }
+
+    void stop() {
+        if (!running) {
+            return;
+        }
+        subprocess_terminate(&proc);
+        subprocess_join(&proc, nullptr);
+        subprocess_destroy(&proc);
+        running = false;
+    }
+
+    static bool read_line(FILE * f, std::string & line) {
+        line.clear();
+        char buf[4096];
+        while (fgets(buf, sizeof(buf), f)) {
+            line += buf;
+            if (!line.empty() && line.back() == '\n') {
+                line.pop_back();
+                return true;
+            }
+        }
+        return !line.empty();
+    }
+
+    struct subprocess_s proc = {};
+    bool        running = false;
+    std::string cur_path;
+#else
+    bool run(const std::string &, const std::string &, const std::string &, std::vector<clause> &) {
+        LOG_ERR("mtmd_helper_gen_audio: built without subprocess support, no phonemizer\n");
+        return false;
+    }
+
+private:
+    void stop() {}
+#endif
+};
+
+// piper-phonemize post-processing (MIT, https://github.com/rhasspy/piper-phonemize):
+// NFD, drop (lang) switch markers, add punctuation from the clause terminator, split sentences
+static std::vector<std::string> piper_sentences(const std::vector<gen_audio_phonemizer::clause> & clauses) {
+    const int clause_type_clause   = 0x00040000;
+    const int clause_type_sentence = 0x00080000;
+    const int clause_period      = 40 | 0x00000000 | clause_type_sentence;
+    const int clause_question    = 40 | 0x00002000 | clause_type_sentence;
+    const int clause_exclamation = 45 | 0x00003000 | clause_type_sentence;
+    const int clause_comma       = 20 | 0x00001000 | clause_type_clause;
+    const int clause_colon       = 30 | 0x00000000 | clause_type_clause;
+    const int clause_semicolon   = 30 | 0x00001000 | clause_type_clause;
+
+    std::vector<std::string> sentences;
+    std::string cur;
+    for (const auto & c : clauses) {
+        const std::string ph = llama_utf8_normalize_nfd(c.phonemes);
+        // "(" and ")" are ASCII, so a byte scan is safe in UTF-8
+        bool in_flag = false;
+        for (char ch : ph) {
+            if (in_flag) {
+                in_flag = ch != ')';
+            } else if (ch == '(') {
+                in_flag = true;
+            } else {
+                cur += ch;
+            }
+        }
+        if (c.terminator == clause_period) {
+            cur += ".";
+        } else if (c.terminator == clause_question) {
+            cur += "?";
+        } else if (c.terminator == clause_exclamation) {
+            cur += "!";
+        } else if (c.terminator == clause_comma) {
+            cur += ", ";
+        } else if (c.terminator == clause_colon) {
+            cur += ": ";
+        } else if (c.terminator == clause_semicolon) {
+            cur += "; ";
+        }
+        if (c.sentence_end) {
+            sentences.push_back(cur);
+            cur.clear();
+        }
+    }
+    if (!cur.empty()) {
+        sentences.push_back(cur);
+    }
+    return sentences;
+}
+
 // VITS (Piper): no backbone, each utterance is synthesized by one GEN_WAV call in step_prompt()
-// for now the prompt is a phoneme string, one utterance per line
+// the prompt is text if a phonemizer is given, else phonemes with one utterance per line
 class vits_gen_audio_pipeline : public mtmd_gen_audio_pipeline {
 public:
     using mtmd_gen_audio_pipeline::mtmd_gen_audio_pipeline;
@@ -1110,16 +1278,32 @@ public:
             return 1;
         }
 
-        // ids are ^ _ (p _)* $, one id per code point
         const std::string prompt(inp->prompt, inp->prompt_len);
-        size_t pos = 0;
-        while (pos <= prompt.size()) {
-            size_t end = prompt.find('\n', pos);
-            if (end == std::string::npos) {
-                end = prompt.size();
+        std::vector<std::string> lines;
+        if (inp->phonemizer) {
+            if (!info.espeak_voice) {
+                LOG_ERR("mtmd_helper_gen_audio: the model does not take espeak phonemes\n");
+                return 1;
             }
-            const std::string line = prompt.substr(pos, end - pos);
-            pos = end + 1;
+            std::vector<gen_audio_phonemizer::clause> clauses;
+            if (!phonemizer.run(inp->phonemizer, info.espeak_voice, prompt, clauses)) {
+                return 1;
+            }
+            lines = piper_sentences(clauses);
+        } else {
+            size_t pos = 0;
+            while (pos <= prompt.size()) {
+                size_t end = prompt.find('\n', pos);
+                if (end == std::string::npos) {
+                    end = prompt.size();
+                }
+                lines.push_back(prompt.substr(pos, end - pos));
+                pos = end + 1;
+            }
+        }
+
+        // ids are ^ _ (p _)* $, one id per code point
+        for (const auto & line : lines) {
             std::vector<int32_t> ids = { sym_id[bos], sym_id[pad] };
             for (size_t i = 0; i < line.size(); ) {
                 size_t len = utf8_len(line[i]);
@@ -1137,6 +1321,11 @@ public:
             }
             ids.push_back(sym_id[eos]);
             if (ids.size() > 3) {
+                std::string ids_str;
+                for (int32_t id : ids) {
+                    ids_str += " " + std::to_string(id);
+                }
+                LOG_DBG("vits utterance %zu: %s\nvits ids:%s\n", utterances.size(), line.c_str(), ids_str.c_str());
                 utterances.push_back(std::move(ids));
             }
         }
@@ -1206,6 +1395,7 @@ private:
         return u < 0x80 ? 1 : (u >> 5) == 0x6 ? 2 : (u >> 4) == 0xE ? 3 : (u >> 3) == 0x1E ? 4 : 1;
     }
 
+    gen_audio_phonemizer phonemizer;
     std::vector<std::vector<int32_t>> utterances;
     size_t   n_done     = 0;
     int32_t  speaker_id = 0;

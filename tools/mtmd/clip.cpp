@@ -2079,6 +2079,7 @@ struct clip_model_loader {
                         get_f32(KEY_GEN_AUDIO_LENGTH_SCALE,  hparams.gen_length_scale,  false);
                         get_arr_str(KEY_GEN_AUDIO_SYMBOLS,  hparams.gen_symbols);
                         get_arr_str(KEY_GEN_AUDIO_SPEAKERS, hparams.gen_speakers, false);
+                        get_string(KEY_GEN_AUDIO_ESPEAK_VOICE, hparams.gen_espeak_voice, false);
                         if (hparams.audio_sample_rate <= 0 || !(hparams.gen_length_scale > 0.0f) ||
                                 !(hparams.gen_noise_scale >= 0.0f) || !(hparams.gen_noise_scale_w >= 0.0f)) {
                             throw std::runtime_error(string_format("%s: vits: invalid sample rate or inference defaults\n", __func__));
