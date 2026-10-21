@@ -3100,6 +3100,30 @@ static int ggml_cpu_try_fuse_ops(
         }
     }
 
+    if (node->op == GGML_OP_MUL) {
+        // Snake activation y = x + sin(a*x)^2 * inv_b, emitted as mul -> sin -> sqr -> mul -> add
+        // same pattern and layout as the CUDA fusion: x [T, C], a and inv_b [1, C]
+        const enum ggml_op fuse_ops[] = { GGML_OP_MUL, GGML_OP_SIN, GGML_OP_SQR, GGML_OP_MUL, GGML_OP_ADD };
+        if (ggml_can_fuse(cgraph, node_n, fuse_ops, 5)) {
+            const struct ggml_tensor * sqr  = cgraph->nodes[node_n + 2];
+            const struct ggml_tensor * mul1 = cgraph->nodes[node_n + 3];
+            struct ggml_tensor *       add  = cgraph->nodes[node_n + 4];
+            const struct ggml_tensor * x     = ggml_are_same_shape(node, node->src[0]) ? node->src[0] : node->src[1];
+            const struct ggml_tensor * a     = x == node->src[0] ? node->src[1] : node->src[0];
+            const struct ggml_tensor * inv_b = mul1->src[0] == sqr ? mul1->src[1] : mul1->src[0];
+            const struct ggml_tensor * x_add = add->src[0] == mul1 ? add->src[1] : add->src[0];
+            if (x_add == x && x->type == GGML_TYPE_F32 && add->type == GGML_TYPE_F32 &&
+                a->type == GGML_TYPE_F32 && inv_b->type == GGML_TYPE_F32 &&
+                x->ne[2] == 1 && x->ne[3] == 1 && ggml_are_same_shape(a, inv_b) &&
+                a->ne[0] == 1 && a->ne[1] == x->ne[1] && a->ne[2] == 1 && a->ne[3] == 1 &&
+                ggml_is_contiguous(x) && ggml_is_contiguous(add) && ggml_is_contiguous(a) && ggml_is_contiguous(inv_b)) {
+
+                ggml_compute_forward_snake_fused(params, x, a, inv_b, add);
+                return 4;
+            }
+        }
+    }
+
     return 0;
 }
 
