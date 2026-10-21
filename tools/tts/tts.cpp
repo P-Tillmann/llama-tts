@@ -73,20 +73,30 @@ int main(int argc, char ** argv) {
 
     //
     // load backbone model and mmproj
+    // standalone generators (e.g. vits) have no backbone, they run from the mmproj alone
     //
 
-    auto llama_init = common_init_from_params(params);
-    llama_model    * model = llama_init->model();
-    llama_context  * lctx  = llama_init->context();
-    common_sampler * smpl  = llama_init->sampler(0);
-    if (!model || !lctx) {
-        LOG_ERR("failed to init model/context\n");
-        return 1;
+    common_init_result_ptr llama_init;
+    llama_model    * model = nullptr;
+    llama_context  * lctx  = nullptr;
+    common_sampler * smpl  = nullptr;
+    if (!params.model.path.empty()) {
+        llama_init = common_init_from_params(params);
+        model = llama_init->model();
+        lctx  = llama_init->context();
+        smpl  = llama_init->sampler(0);
+        if (!model || !lctx) {
+            LOG_ERR("failed to init model/context\n");
+            return 1;
+        }
     }
 
     mtmd_context_params mtmd_params = mtmd_context_params_default();
     mtmd_params.use_gpu = params.mmproj_use_gpu;
     mtmd_params.device  = params.mmproj_device;
+    if (params.cpuparams.n_threads > 0) {
+        mtmd_params.n_threads = params.cpuparams.n_threads;
+    }
     mtmd::context_ptr mctx(mtmd_init_from_file(params.mmproj.path.c_str(), model, mtmd_params));
     if (!mctx) {
         LOG_ERR("failed to load mmproj %s\n", params.mmproj.path.c_str());
@@ -122,6 +132,8 @@ int main(int argc, char ** argv) {
     inp.top_k       = params.sampling.top_k;
     inp.top_p       = params.sampling.top_p;
     inp.seed        = params.sampling.seed;
+    inp.speaker_id  = params.tts_speaker_id;
+    inp.speed       = params.tts_speed;
 
     //
     // stage 1: process prompt via backbone model, generate semantic representation
@@ -154,13 +166,14 @@ int main(int argc, char ** argv) {
 
     const int max_new = params.n_predict > 0 ? params.n_predict : 512;
     int n_frames = 0;
-    llama_token sampled = sample_semantic_code();
-    const float * h_state = llama_get_embeddings_ith(lctx, -1);
+    llama_token sampled = lctx ? sample_semantic_code() : LLAMA_TOKEN_NULL;
+    const float * h_state = lctx ? llama_get_embeddings_ith(lctx, -1) : nullptr;
 
     tts_timings timings;
     const int64_t t_gen_start_us = ggml_time_us();
 
-    bool stop = false;
+    // without a backbone, step_prompt() has already produced the audio
+    bool stop = lctx == nullptr;
     while (!stop && n_frames < max_new) {
         const float * h_next = nullptr;
 

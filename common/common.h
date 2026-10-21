@@ -770,6 +770,8 @@ struct common_params {
     // TTS params
     std::string tts_lang = "";
     std::string tts_speaker_file = "";
+    int32_t     tts_speaker_id   = 0;    // for multi-speaker models
+    float       tts_speed        = 0.0f; // 0 = model default
 
     bool is_gen_docs = false; // whether we are running inside llama-gen-docs
 };
