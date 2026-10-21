@@ -404,6 +404,37 @@ struct clip_graph_pockettts_gen : clip_graph {
     ggml_tensor * flow_forward(ggml_tensor * cond, ggml_tensor * x, float s, float t) const;
 };
 
+//
+// vits (piper): phoneme ids -> PCM, two graphs per call, see clip_encode_vits()
+// stage 0: text encoder + stochastic duration predictor -> "out_stats", "out_logw"
+// stage 1: frame-expanded stats -> flow -> hifi-gan -> "out_audio"
+//
+struct clip_graph_vits : clip_graph {
+    clip_graph_vits(clip_ctx * ctx, const clip_image_f32 & img, int stage, int n_tokens, int n_frames, float noise_scale, float noise_scale_w)
+        : clip_graph(ctx, img), stage(stage), n_tokens(n_tokens), n_frames(n_frames), noise_scale(noise_scale), noise_scale_w(noise_scale_w) {}
+    ggml_cgraph * build() override;
+
+    int   stage;
+    int   n_tokens;
+    int   n_frames;      // stage 1 only
+    float noise_scale;   // prior noise, stage 1
+    float noise_scale_w; // duration noise, stage 0
+
+    ggml_tensor * conv1x1(ggml_tensor * x, const clip_vits::wb & c) const;
+    ggml_tensor * conv1d(ggml_tensor * x, const clip_vits::wb & c, int dilation) const;
+    ggml_tensor * conv1d_dw(ggml_tensor * x, const clip_vits::wb & c, int dilation) const;
+    ggml_tensor * conv_transpose1d(ggml_tensor * x, const clip_vits::wb & c) const;
+    ggml_tensor * layer_norm(ggml_tensor * x, const clip_vits::wb & n) const;
+    ggml_tensor * rows(ggml_tensor * x, int64_t i0, int64_t n) const;
+    ggml_tensor * rel_attn(ggml_tensor * x, int il) const;
+    ggml_tensor * dds(const clip_vits::dds_net & net, ggml_tensor * x) const;
+    ggml_tensor * spline_inverse(ggml_tensor * x, ggml_tensor * h, int64_t n_filt) const;
+    ggml_tensor * wavenet(const clip_vits::coupling & c, ggml_tensor * x, ggml_tensor * g) const;
+    ggml_tensor * resblock(ggml_tensor * x, const clip_vits::resblock & rb, int j) const;
+    void build_text(ggml_tensor * g);
+    void build_wave(ggml_tensor * g);
+};
+
 // one persisted state buffer used by code2wav, see qwen3tts-gen.cpp
 struct c2w_state_slot {
     std::string name;

@@ -87,6 +87,9 @@ int clip_n_output_tokens_y(const clip_ctx * ctx, const clip_image_f32 * img);
 // this should be equal to the embedding dimension of the text model
 int clip_n_mmproj_embd(const struct clip_ctx * ctx);
 
+// number of speakers of a multi-speaker generator, 1 otherwise
+int clip_n_gen_speakers(const struct clip_ctx * ctx);
+
 // TODO: remove clip_image_encode() and always use batched version
 bool clip_image_encode      (struct clip_ctx * ctx, int n_threads, const clip_image_f32 * img, std::vector<float> & out_vec);
 bool clip_image_batch_encode(struct clip_ctx * ctx, int n_threads, const struct clip_image_f32_batch * imgs, std::vector<float> & out_batch_embd);
@@ -120,6 +123,12 @@ struct clip_encode_params {
     std::vector<float> * out_audio = nullptr;         // decoded PCM samples, F32
     const std::vector<uint8_t> * state_in  = nullptr; // state from previous call, null or wrong size means cold start
     std::vector<uint8_t> *       state_out = nullptr; // state for the next call
+
+    // GEN_WAV for models that take symbol ids (vits): speaker and scales, negative or 0 means model default
+    int32_t speaker       = -1;
+    float   length_scale  = 0.0f;
+    float   noise_scale   = -1.0f;
+    float   noise_scale_w = -1.0f;
 
     // streaming audio input, updated in place by clip_encode()
     struct clip_enc_state * enc_state = nullptr;

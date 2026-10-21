@@ -105,6 +105,12 @@
 #define KEY_GEN_AUDIO_PROJ_TYPE    "clip.gen.audio.projector_type" // for models with mixed modalities
 // name of the weight variant, for settings that are not in the checkpoint
 #define KEY_GEN_AUDIO_VARIANT      "clip.gen.audio.model_variant"
+#define KEY_GEN_AUDIO_SAMPLE_RATE  "clip.gen.audio.sample_rate"
+#define KEY_GEN_AUDIO_SYMBOLS      "clip.gen.audio.symbols"  // input symbol per id, for models that take symbol ids
+#define KEY_GEN_AUDIO_SPEAKERS     "clip.gen.audio.speakers" // speaker name per id
+#define KEY_GEN_AUDIO_NOISE_SCALE  "clip.gen.audio.noise_scale"
+#define KEY_GEN_AUDIO_NOISE_SCALE_W "clip.gen.audio.noise_scale_w"
+#define KEY_GEN_AUDIO_LENGTH_SCALE "clip.gen.audio.length_scale"
 #define KEY_AUDIO_SUBSMPL_FACTOR   "clip.audio.subsampling_factor"
 
 //
@@ -298,6 +304,32 @@
 #define TN_A_GEN_WAV_SEANET_RES_CONV1  "a.gen.wav.seanet.blk.%d.res_conv1.%s"
 #define TN_A_GEN_WAV_SEANET_RES_CONV2  "a.gen.wav.seanet.blk.%d.res_conv2.%s"
 #define TN_A_GEN_WAV_SEANET_SCALE_CONV "a.gen.wav.seanet.blk.%d.scale_conv.%s"
+
+// vits (piper): phoneme ids -> raw PCM, no backbone
+// text encoder layers use the generic TN_ATTN_*/TN_FFN_*/TN_LN_* macros, prefix "a.gen.enc"
+// "%s" prefixes: "a.gen.dp", "a.gen.dp.flow.N", "a.gen.flow.N", "a.gen.dec"
+#define TN_A_GEN_VITS_TOK_EMBD   "a.gen.enc.token_embd.weight"
+#define TN_A_GEN_VITS_SPK_EMBD   "a.gen.spk_embd.weight"
+#define TN_A_GEN_VITS_REL_K      "a.gen.enc.blk.%d.attn_rel_k"
+#define TN_A_GEN_VITS_REL_V      "a.gen.enc.blk.%d.attn_rel_v"
+#define TN_A_GEN_VITS_ENC_PROJ   "a.gen.enc.proj.%s"
+#define TN_A_GEN_VITS_PRE        "%s.pre.%s"
+#define TN_A_GEN_VITS_COND       "%s.cond.%s"
+#define TN_A_GEN_VITS_PROJ       "%s.proj.%s"
+#define TN_A_GEN_VITS_POST       "%s.post.%s"
+#define TN_A_GEN_VITS_DDS_CONV   "%s.dds.%d.conv.%s"
+#define TN_A_GEN_VITS_DDS_1X1    "%s.dds.%d.conv1x1.%s"
+#define TN_A_GEN_VITS_DDS_NORM_1 "%s.dds.%d.norm1.%s"
+#define TN_A_GEN_VITS_DDS_NORM_2 "%s.dds.%d.norm2.%s"
+#define TN_A_GEN_VITS_DP_EA      "a.gen.dp.ea.%s"
+#define TN_A_GEN_VITS_WN_COND    "%s.wn.cond.%s"
+#define TN_A_GEN_VITS_WN_IN      "%s.wn.%d.in.%s"
+#define TN_A_GEN_VITS_WN_RES     "%s.wn.%d.res_skip.%s"
+#define TN_A_GEN_VITS_CONV_PRE   "a.gen.dec.conv_pre.%s"
+#define TN_A_GEN_VITS_CONV_POST  "a.gen.dec.conv_post.%s"
+#define TN_A_GEN_VITS_UP         "a.gen.dec.up.%d.%s"
+#define TN_A_GEN_VITS_RES_C1     "a.gen.dec.res.%d.c1.%d.%s"
+#define TN_A_GEN_VITS_RES_C2     "a.gen.dec.res.%d.c2.%d.%s"
 
 // cogvlm
 #define TN_MM_POST_FC_NORM "mm.post_fc_norm.%s"
@@ -536,6 +568,7 @@ enum projector_type {
     PROJECTOR_TYPE_QWEN3TTS_GEN,
     PROJECTOR_TYPE_POCKETTTS_SPKENC,
     PROJECTOR_TYPE_POCKETTTS_GEN,
+    PROJECTOR_TYPE_VITS,
     PROJECTOR_TYPE_MUSE_GLIMMER,
     PROJECTOR_TYPE_COHERE2V,
     PROJECTOR_TYPE_MUSE_SPARK_AUDIO,
@@ -610,6 +643,7 @@ static std::map<projector_type, std::string> PROJECTOR_TYPE_NAMES = {
     { PROJECTOR_TYPE_QWEN3TTS_GEN,      "qwen3tts_gen"},
     { PROJECTOR_TYPE_POCKETTTS_SPKENC,  "pockettts_spkenc"},
     { PROJECTOR_TYPE_POCKETTTS_GEN,     "pockettts_gen"},
+    { PROJECTOR_TYPE_VITS,              "vits"},
     { PROJECTOR_TYPE_MUSE_GLIMMER,      "muse-glimmer"},
     { PROJECTOR_TYPE_COHERE2V,          "cohere2v"},
     { PROJECTOR_TYPE_MUSE_SPARK_AUDIO,  "muse-spark-audio"},

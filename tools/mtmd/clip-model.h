@@ -193,6 +193,13 @@ struct clip_hparams {
     int32_t wav_dac_n_res        = 0;
     int32_t wav_tfm_swa          = 0; // pre_transformer's KV cache size, in frames
 
+    // vits (piper), defaults come from the voice config
+    float gen_noise_scale   = 0.667f;
+    float gen_noise_scale_w = 0.8f;
+    float gen_length_scale  = 1.0f;
+    std::vector<std::string> gen_symbols;  // input symbol per id
+    std::vector<std::string> gen_speakers; // speaker name per id
+
     // mimo-v2.5: LLM-side connector (input_local_transformer)
     int32_t audio_local_n_layer = 0;
     int32_t audio_local_group_size = 0;
@@ -513,6 +520,59 @@ struct clip_flow_net {
 };
 
 // qwen3tts code2wav: RVQ codes -> raw PCM
+// vits (piper) generator, see models/vits.cpp
+struct clip_vits {
+    struct wb {
+        ggml_tensor * w = nullptr;
+        ggml_tensor * b = nullptr;
+    };
+    // dilated depth-separable conv stack of the duration predictor
+    struct dds_layer {
+        wb conv; // depthwise, w is [C, K]
+        wb conv1x1;
+        wb norm1;
+        wb norm2;
+    };
+    struct dds_net {
+        wb pre;
+        wb cond;
+        std::vector<dds_layer> layers;
+        wb proj;
+    };
+    // residual coupling layer with a WaveNet body, flips are folded into pre/post at conversion
+    struct coupling {
+        wb pre;
+        wb post;
+        wb wn_cond;
+        std::vector<wb> wn_in;
+        std::vector<wb> wn_res;
+    };
+    struct resblock {
+        std::vector<wb> c1;
+        std::vector<wb> c2; // empty for resblock type 2
+    };
+
+    ggml_tensor * tok_embd = nullptr;
+    ggml_tensor * spk_embd = nullptr;
+    std::vector<clip_layer>    enc_layers;
+    std::vector<ggml_tensor *> enc_rel_k; // [d_head, 2w+1]
+    std::vector<ggml_tensor *> enc_rel_v; // [2w+1, d_head]
+    wb enc_proj;
+
+    dds_net dp;
+    std::vector<dds_net> dp_flows; // conv flows, in application order
+    ggml_tensor * dp_ea_m     = nullptr;
+    ggml_tensor * dp_ea_scale = nullptr; // exp(-logs)
+
+    std::vector<coupling> flows; // in application order
+
+    wb dec_conv_pre;
+    wb dec_cond;
+    std::vector<wb>       dec_ups;
+    std::vector<resblock> dec_res; // n_ups * n_kernels
+    ggml_tensor * dec_conv_post_w = nullptr;
+};
+
 struct clip_code2wav {
     // "upsample" stage: one ConvNeXt block plus the causal ConvTranspose1d before it
     struct upsample_block {
@@ -844,6 +904,8 @@ struct clip_model {
     ggml_tensor * gen_quant_out_w = nullptr; // latent -> decoder dim
     ggml_tensor * gen_upsample_w  = nullptr; // depthwise convtr, frame rate -> encoder frame rate
     std::vector<clip_layer> gen_tfm_layers; // mimi decoder_transformer
+
+    clip_vits vits;
 
     // cogvlm
     ggml_tensor * mm_post_fc_norm_w = nullptr;
