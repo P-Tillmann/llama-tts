@@ -20,6 +20,8 @@ add_library(mtmd
             mtmd-internal.h
             mtmd-helper.cpp
             mtmd-helper-gen.cpp
+            mtmd-helper-g2p-en.cpp
+            mtmd-helper-g2p-en.h
             mtmd-helper-common.h
             mtmd-helper.h
             clip.cpp

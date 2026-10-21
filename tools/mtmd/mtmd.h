@@ -435,6 +435,13 @@ struct mtmd_gen_audio_info {
     int32_t              n_speakers; // 1 for single-speaker models
     const char * const * speakers;   // speaker name per id, nullptr if the model has none
     const char *         espeak_voice; // espeak-ng voice of the symbols (e.g. "en-us"), nullptr if they are not espeak phonemes
+
+    // pronunciation lexicon for the text frontend, 0 / nullptr if the model has none
+    const char *         lexicon_lang;     // e.g. "en-us"
+    int32_t              n_lexicon;
+    int32_t              n_lexicon_gold;   // the first n_lexicon_gold entries are preferred over the rest
+    const char * const * lexicon_words;    // "word", or "word\tPOS" for a part-of-speech variant
+    const char * const * lexicon_phonemes; // "" means no pronunciation
 };
 
 MTMD_API struct mtmd_gen_audio_info mtmd_gen_audio_get_info(const mtmd_context * ctx);

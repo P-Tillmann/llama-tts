@@ -1,6 +1,7 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 #include "mtmd-helper-common.h"
+#include "mtmd-helper-g2p-en.h"
 #include "llama.h"
 #include "../src/llama-ext.h"
 
@@ -1284,59 +1285,6 @@ static std::vector<std::string> piper_sentences(const std::vector<gen_audio_phon
     return sentences;
 }
 
-// espeak IPA (with ^ ties) to Kokoro phonemes, ported from misaki espeak.py (Apache-2.0, https://github.com/hexgrad/misaki)
-// lang is the Kokoro language code: 'a' American English, 'b' British English, others use the generic mapping
-static std::string kokoro_from_espeak(std::string ps, char lang) {
-    if (lang == 'a' || lang == 'b') {
-        // EspeakFallback.E2M, longest keys first
-        static const char * e2m[][2] = {
-            { "ʔˌn̩", "ʔn" }, { "ʔn̩", "ʔn" }, { "a^ɪ", "I" }, { "a^ʊ", "W" }, { "d^ʒ", "ʤ" }, { "e^ɪ", "A" },
-            { "t^ʃ", "ʧ" }, { "ɔ^ɪ", "Y" }, { "ə^l", "ᵊl" }, { "ʲo", "jo" }, { "ʲə", "jə" }, { "e", "A" }, { "ʲ", "" },
-            { "ɚ", "əɹ" }, { "r", "ɹ" }, { "x", "k" }, { "ç", "k" }, { "ɐ", "ə" }, { "ɬ", "l" }, { "̃", "" },
-        };
-        for (const auto & r : e2m) {
-            ps = replace_all(ps, r[0], r[1]);
-        }
-        // syllabic consonants: X + U+0329 -> schwa X
-        std::string out;
-        const auto cps = utf8_split(ps);
-        for (size_t i = 0; i < cps.size(); i++) {
-            if (i + 1 < cps.size() && cps[i + 1] == "̩" && cps[i] != " ") {
-                out += "ᵊ" + cps[i];
-                i++;
-            } else if (cps[i] != "̩") {
-                out += cps[i];
-            }
-        }
-        ps = out;
-        if (lang == 'b') {
-            ps = replace_all(ps, "e^ə", "ɛː");
-            ps = replace_all(ps, "iə", "ɪə");
-            ps = replace_all(ps, "ə^ʊ", "Q");
-        } else {
-            ps = replace_all(ps, "o^ʊ", "O");
-            ps = replace_all(ps, "ɜːɹ", "ɜɹ");
-            ps = replace_all(ps, "ɜː", "ɜɹ");
-            ps = replace_all(ps, "ɪə", "iə");
-            ps = replace_all(ps, "ː", "");
-        }
-        ps = replace_all(ps, "o", "ɔ");
-        ps = replace_all(ps, "ɾ", "T");
-        ps = replace_all(ps, "ʔ", "t");
-        return replace_all(ps, "^", "");
-    }
-    // EspeakG2P.e2m, keys in sorted order
-    static const char * e2m[][2] = {
-        { "a^ɪ", "I" }, { "a^ʊ", "W" }, { "d^z", "ʣ" }, { "d^ʒ", "ʤ" }, { "e^ɪ", "A" }, { "o^ʊ", "O" },
-        { "s^s", "S" }, { "t^s", "ʦ" }, { "t^ʃ", "ʧ" }, { "ɔ^ɪ", "Y" }, { "ə^ʊ", "Q" },
-    };
-    for (const auto & r : e2m) {
-        ps = replace_all(ps, r[0], r[1]);
-    }
-    ps = replace_all(ps, "^", "");
-    return replace_all(ps, "-", "");
-}
-
 // models that take phoneme ids and have no backbone (VITS, Kokoro): each utterance is synthesized
 // by one GEN_WAV call in step_prompt(); subclasses turn the prompt into utterances
 class phoneme_gen_audio_pipeline : public mtmd_gen_audio_pipeline {
@@ -1503,8 +1451,9 @@ protected:
     }
 };
 
-// Kokoro: the language comes from the first letter of the voice name; with a phonemizer, English text goes
-// through espeak and the misaki fallback mapping (the misaki lexicon is not ported yet)
+// Kokoro: the language comes from the first letter of the voice name; with a phonemizer, American English
+// goes through the misaki G2P port when the model has its lexicon (espeak only for unknown words),
+// other languages through espeak and the misaki mapping
 // chunks hold at most 510 phonemes and end at a sentence when possible, like KPipeline
 class kokoro_gen_audio_pipeline : public phoneme_gen_audio_pipeline {
 public:
@@ -1530,14 +1479,59 @@ protected:
                 LOG_ERR("mtmd_helper_gen_audio: no espeak voice for language '%c'\n", lang);
                 return 1;
             }
+            const bool use_g2p = lang == 'a' && info.n_lexicon > 0 && info.lexicon_lang && std::string(info.lexicon_lang) == "en-us";
+            if (use_g2p && !g2p) {
+                g2p.reset(new g2p_en(info.lexicon_words, info.lexicon_phonemes, info.n_lexicon, info.n_lexicon_gold, false));
+            }
             for (const auto & text : split_lines(prompt)) {
+                if (text.find_first_not_of(" \t\r") == std::string::npos) {
+                    continue;
+                }
+                if (use_g2p) {
+                    // misaki EspeakFallback for words that are not in the lexicon; like phonemizer's preserve_punctuation,
+                    // the word is split at punctuation marks, the pieces are phonemized alone and the marks are kept
+                    auto fallback = [&](const std::string & word, std::string & ps) {
+                        static const std::string marks = ";:,.!?¡¿—…\"«»“”(){}[]";
+                        ps.clear();
+                        std::string piece;
+                        auto flush = [&]() {
+                            if (piece.empty()) {
+                                return true;
+                            }
+                            std::vector<gen_audio_phonemizer::clause> clauses;
+                            if (!phonemizer.run(phonemizer_path, { "--tie", "^" }, it->second, piece, clauses)) {
+                                return false;
+                            }
+                            for (size_t i = 0; i < clauses.size(); i++) {
+                                ps += (i ? " " : "") + g2p_en::from_espeak(clauses[i].phonemes, lang);
+                            }
+                            piece.clear();
+                            return true;
+                        };
+                        for (const auto & cp : utf8_split(word)) {
+                            if (marks.find(cp) != std::string::npos) {
+                                if (!flush()) {
+                                    return false;
+                                }
+                                ps += cp;
+                            } else {
+                                piece += cp;
+                            }
+                        }
+                        return flush() && !ps.empty();
+                    };
+                    for (const auto & chunk : g2p->phonemize(text, fallback)) {
+                        paragraphs.push_back({ { utf8_split(chunk), true } });
+                    }
+                    continue;
+                }
                 std::vector<gen_audio_phonemizer::clause> clauses;
                 if (!phonemizer.run(phonemizer_path, { "--tie", "^" }, it->second, text, clauses)) {
                     return 1;
                 }
                 std::vector<piece> pieces;
                 for (const auto & c : clauses) {
-                    std::string ps = kokoro_from_espeak(c.phonemes, lang) + clause_punctuation(c.terminator);
+                    std::string ps = g2p_en::from_espeak(c.phonemes, lang) + clause_punctuation(c.terminator);
                     if (!pieces.empty()) {
                         ps = " " + ps;
                     }
@@ -1584,6 +1578,8 @@ protected:
     }
 
 private:
+    std::unique_ptr<g2p_en> g2p;
+
     void emit(std::vector<std::string> cps) {
         // trim spaces at both ends
         while (!cps.empty() && cps.front() == " ") {

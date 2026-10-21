@@ -113,6 +113,10 @@
 #define KEY_GEN_AUDIO_NOISE_SCALE_W "clip.gen.audio.noise_scale_w"
 #define KEY_GEN_AUDIO_LENGTH_SCALE "clip.gen.audio.length_scale"
 #define KEY_GEN_AUDIO_ESPEAK_VOICE "clip.gen.audio.espeak_voice"
+#define KEY_GEN_AUDIO_LEX_LANG     "clip.gen.audio.lexicon_lang"     // pronunciation lexicon of the G2P frontend
+#define KEY_GEN_AUDIO_LEX_N_GOLD   "clip.gen.audio.lexicon_n_gold"   // the first entries are preferred over the rest
+#define KEY_GEN_AUDIO_LEX_WORDS    "clip.gen.audio.lexicon_words"    // "word" or "word\tPOS"
+#define KEY_GEN_AUDIO_LEX_PHONEMES "clip.gen.audio.lexicon_phonemes"
 #define KEY_AUDIO_SUBSMPL_FACTOR   "clip.audio.subsampling_factor"
 
 //
