@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -1095,8 +1096,8 @@ public:
     }
 
 #ifdef MTMD_SUBPROCESS
-    bool run(const std::string & path, const std::string & voice, const std::string & text, std::vector<clause> & out) {
-        if (!start(path)) {
+    bool run(const std::string & path, const std::vector<std::string> & args, const std::string & voice, const std::string & text, std::vector<clause> & out) {
+        if (!start(path, args)) {
             return false;
         }
         std::string req = voice + "\t";
@@ -1140,19 +1141,24 @@ public:
     }
 
 private:
-    bool start(const std::string & path) {
-        if (running && path == cur_path) {
+    bool start(const std::string & path, const std::vector<std::string> & args) {
+        if (running && path == cur_path && args == cur_args) {
             return true;
         }
         stop();
-        const char * argv[] = { path.c_str(), nullptr };
+        std::vector<const char *> argv = { path.c_str() };
+        for (const auto & a : args) {
+            argv.push_back(a.c_str());
+        }
+        argv.push_back(nullptr);
         const int opts = subprocess_option_inherit_environment | subprocess_option_search_user_path | subprocess_option_no_window;
-        if (subprocess_create(argv, opts, &proc) != 0) {
+        if (subprocess_create(argv.data(), opts, &proc) != 0) {
             LOG_ERR("mtmd_helper_gen_audio: failed to start phonemizer %s\n", path.c_str());
             return false;
         }
         running  = true;
         cur_path = path;
+        cur_args = args;
         return true;
     }
 
@@ -1182,8 +1188,9 @@ private:
     struct subprocess_s proc = {};
     bool        running = false;
     std::string cur_path;
+    std::vector<std::string> cur_args;
 #else
-    bool run(const std::string &, const std::string &, const std::string &, std::vector<clause> &) {
+    bool run(const std::string &, const std::vector<std::string> &, const std::string &, const std::string &, std::vector<clause> &) {
         LOG_ERR("mtmd_helper_gen_audio: built without subprocess support, no phonemizer\n");
         return false;
     }
@@ -1193,18 +1200,59 @@ private:
 #endif
 };
 
-// piper-phonemize post-processing (MIT, https://github.com/rhasspy/piper-phonemize):
-// NFD, drop (lang) switch markers, add punctuation from the clause terminator, split sentences
-static std::vector<std::string> piper_sentences(const std::vector<gen_audio_phonemizer::clause> & clauses) {
-    const int clause_type_clause   = 0x00040000;
-    const int clause_type_sentence = 0x00080000;
-    const int clause_period      = 40 | 0x00000000 | clause_type_sentence;
-    const int clause_question    = 40 | 0x00002000 | clause_type_sentence;
-    const int clause_exclamation = 45 | 0x00003000 | clause_type_sentence;
-    const int clause_comma       = 20 | 0x00001000 | clause_type_clause;
-    const int clause_colon       = 30 | 0x00000000 | clause_type_clause;
-    const int clause_semicolon   = 30 | 0x00001000 | clause_type_clause;
+static size_t utf8_len(char c) {
+    const unsigned char u = (unsigned char) c;
+    return u < 0x80 ? 1 : (u >> 5) == 0x6 ? 2 : (u >> 4) == 0xE ? 3 : (u >> 3) == 0x1E ? 4 : 1;
+}
 
+static std::vector<std::string> utf8_split(const std::string & s) {
+    std::vector<std::string> cps;
+    for (size_t i = 0; i < s.size(); ) {
+        const size_t len = std::min(utf8_len(s[i]), s.size() - i);
+        cps.push_back(s.substr(i, len));
+        i += len;
+    }
+    return cps;
+}
+
+static std::vector<std::string> split_lines(const std::string & s) {
+    std::vector<std::string> lines;
+    size_t pos = 0;
+    while (pos <= s.size()) {
+        size_t end = s.find('\n', pos);
+        if (end == std::string::npos) {
+            end = s.size();
+        }
+        lines.push_back(s.substr(pos, end - pos));
+        pos = end + 1;
+    }
+    return lines;
+}
+
+static std::string replace_all(std::string s, const std::string & from, const std::string & to) {
+    for (size_t pos = s.find(from); pos != std::string::npos; pos = s.find(from, pos + to.size())) {
+        s.replace(pos, from.size(), to);
+    }
+    return s;
+}
+
+// punctuation for an espeak clause terminator, see piper-phonemize (MIT, https://github.com/rhasspy/piper-phonemize)
+static const char * clause_punctuation(int terminator) {
+    const int type_clause   = 0x00040000;
+    const int type_sentence = 0x00080000;
+    switch (terminator) {
+        case 40 | 0x00000000 | type_sentence: return ".";
+        case 40 | 0x00002000 | type_sentence: return "?";
+        case 45 | 0x00003000 | type_sentence: return "!";
+        case 20 | 0x00001000 | type_clause:   return ",";
+        case 30 | 0x00000000 | type_clause:   return ":";
+        case 30 | 0x00001000 | type_clause:   return ";";
+        default:                              return "";
+    }
+}
+
+// piper-phonemize post-processing: NFD, drop (lang) switch markers, add punctuation, split sentences
+static std::vector<std::string> piper_sentences(const std::vector<gen_audio_phonemizer::clause> & clauses) {
     std::vector<std::string> sentences;
     std::string cur;
     for (const auto & c : clauses) {
@@ -1220,18 +1268,10 @@ static std::vector<std::string> piper_sentences(const std::vector<gen_audio_phon
                 cur += ch;
             }
         }
-        if (c.terminator == clause_period) {
-            cur += ".";
-        } else if (c.terminator == clause_question) {
-            cur += "?";
-        } else if (c.terminator == clause_exclamation) {
-            cur += "!";
-        } else if (c.terminator == clause_comma) {
-            cur += ", ";
-        } else if (c.terminator == clause_colon) {
-            cur += ": ";
-        } else if (c.terminator == clause_semicolon) {
-            cur += "; ";
+        const std::string punct = clause_punctuation(c.terminator);
+        cur += punct;
+        if (punct == "," || punct == ":" || punct == ";") {
+            cur += " ";
         }
         if (c.sentence_end) {
             sentences.push_back(cur);
@@ -1244,9 +1284,62 @@ static std::vector<std::string> piper_sentences(const std::vector<gen_audio_phon
     return sentences;
 }
 
-// VITS (Piper): no backbone, each utterance is synthesized by one GEN_WAV call in step_prompt()
-// the prompt is text if a phonemizer is given, else phonemes with one utterance per line
-class vits_gen_audio_pipeline : public mtmd_gen_audio_pipeline {
+// espeak IPA (with ^ ties) to Kokoro phonemes, ported from misaki espeak.py (Apache-2.0, https://github.com/hexgrad/misaki)
+// lang is the Kokoro language code: 'a' American English, 'b' British English, others use the generic mapping
+static std::string kokoro_from_espeak(std::string ps, char lang) {
+    if (lang == 'a' || lang == 'b') {
+        // EspeakFallback.E2M, longest keys first
+        static const char * e2m[][2] = {
+            { "ʔˌn̩", "ʔn" }, { "ʔn̩", "ʔn" }, { "a^ɪ", "I" }, { "a^ʊ", "W" }, { "d^ʒ", "ʤ" }, { "e^ɪ", "A" },
+            { "t^ʃ", "ʧ" }, { "ɔ^ɪ", "Y" }, { "ə^l", "ᵊl" }, { "ʲo", "jo" }, { "ʲə", "jə" }, { "e", "A" }, { "ʲ", "" },
+            { "ɚ", "əɹ" }, { "r", "ɹ" }, { "x", "k" }, { "ç", "k" }, { "ɐ", "ə" }, { "ɬ", "l" }, { "̃", "" },
+        };
+        for (const auto & r : e2m) {
+            ps = replace_all(ps, r[0], r[1]);
+        }
+        // syllabic consonants: X + U+0329 -> schwa X
+        std::string out;
+        const auto cps = utf8_split(ps);
+        for (size_t i = 0; i < cps.size(); i++) {
+            if (i + 1 < cps.size() && cps[i + 1] == "̩" && cps[i] != " ") {
+                out += "ᵊ" + cps[i];
+                i++;
+            } else if (cps[i] != "̩") {
+                out += cps[i];
+            }
+        }
+        ps = out;
+        if (lang == 'b') {
+            ps = replace_all(ps, "e^ə", "ɛː");
+            ps = replace_all(ps, "iə", "ɪə");
+            ps = replace_all(ps, "ə^ʊ", "Q");
+        } else {
+            ps = replace_all(ps, "o^ʊ", "O");
+            ps = replace_all(ps, "ɜːɹ", "ɜɹ");
+            ps = replace_all(ps, "ɜː", "ɜɹ");
+            ps = replace_all(ps, "ɪə", "iə");
+            ps = replace_all(ps, "ː", "");
+        }
+        ps = replace_all(ps, "o", "ɔ");
+        ps = replace_all(ps, "ɾ", "T");
+        ps = replace_all(ps, "ʔ", "t");
+        return replace_all(ps, "^", "");
+    }
+    // EspeakG2P.e2m, keys in sorted order
+    static const char * e2m[][2] = {
+        { "a^ɪ", "I" }, { "a^ʊ", "W" }, { "d^z", "ʣ" }, { "d^ʒ", "ʤ" }, { "e^ɪ", "A" }, { "o^ʊ", "O" },
+        { "s^s", "S" }, { "t^s", "ʦ" }, { "t^ʃ", "ʧ" }, { "ɔ^ɪ", "Y" }, { "ə^ʊ", "Q" },
+    };
+    for (const auto & r : e2m) {
+        ps = replace_all(ps, r[0], r[1]);
+    }
+    ps = replace_all(ps, "^", "");
+    return replace_all(ps, "-", "");
+}
+
+// models that take phoneme ids and have no backbone (VITS, Kokoro): each utterance is synthesized
+// by one GEN_WAV call in step_prompt(); subclasses turn the prompt into utterances
+class phoneme_gen_audio_pipeline : public mtmd_gen_audio_pipeline {
 public:
     using mtmd_gen_audio_pipeline::mtmd_gen_audio_pipeline;
 
@@ -1263,71 +1356,18 @@ public:
         speaker_id = inp->speaker_id;
         speed      = inp->speed;
         out_type   = inp->out_type;
-
-        std::unordered_map<std::string, int32_t> sym_id;
+        if (speaker_id < 0 || speaker_id >= info.n_speakers) {
+            LOG_ERR("mtmd_helper_gen_audio: speaker %d out of range, the model has %d\n", speaker_id, info.n_speakers);
+            return 1;
+        }
+        sym_id.clear();
         for (int32_t i = 0; i < info.n_symbols; i++) {
             if (info.symbols[i][0] != '\0') {
                 sym_id[info.symbols[i]] = i;
             }
         }
-        const char * bos = "^";
-        const char * eos = "$";
-        const char * pad = "_";
-        if (!sym_id.count(bos) || !sym_id.count(eos) || !sym_id.count(pad)) {
-            LOG_ERR("mtmd_helper_gen_audio: model has no ^ $ _ symbols\n");
+        if (build_utterances(std::string(inp->prompt, inp->prompt_len), inp->phonemizer) != 0) {
             return 1;
-        }
-
-        const std::string prompt(inp->prompt, inp->prompt_len);
-        std::vector<std::string> lines;
-        if (inp->phonemizer) {
-            if (!info.espeak_voice) {
-                LOG_ERR("mtmd_helper_gen_audio: the model does not take espeak phonemes\n");
-                return 1;
-            }
-            std::vector<gen_audio_phonemizer::clause> clauses;
-            if (!phonemizer.run(inp->phonemizer, info.espeak_voice, prompt, clauses)) {
-                return 1;
-            }
-            lines = piper_sentences(clauses);
-        } else {
-            size_t pos = 0;
-            while (pos <= prompt.size()) {
-                size_t end = prompt.find('\n', pos);
-                if (end == std::string::npos) {
-                    end = prompt.size();
-                }
-                lines.push_back(prompt.substr(pos, end - pos));
-                pos = end + 1;
-            }
-        }
-
-        // ids are ^ _ (p _)* $, one id per code point
-        for (const auto & line : lines) {
-            std::vector<int32_t> ids = { sym_id[bos], sym_id[pad] };
-            for (size_t i = 0; i < line.size(); ) {
-                size_t len = utf8_len(line[i]);
-                const std::string cp = line.substr(i, len);
-                i += len;
-                auto it = sym_id.find(cp);
-                if (it == sym_id.end()) {
-                    if (cp != "\r") {
-                        LOG_WRN("mtmd_helper_gen_audio: skipping unknown phoneme '%s'\n", cp.c_str());
-                    }
-                    continue;
-                }
-                ids.push_back(it->second);
-                ids.push_back(sym_id[pad]);
-            }
-            ids.push_back(sym_id[eos]);
-            if (ids.size() > 3) {
-                std::string ids_str;
-                for (int32_t id : ids) {
-                    ids_str += " " + std::to_string(id);
-                }
-                LOG_DBG("vits utterance %zu: %s\nvits ids:%s\n", utterances.size(), line.c_str(), ids_str.c_str());
-                utterances.push_back(std::move(ids));
-            }
         }
         if (utterances.empty()) {
             LOG_ERR("mtmd_helper_gen_audio: no phonemes in the prompt\n");
@@ -1389,20 +1429,183 @@ public:
         return 0;
     }
 
-private:
-    static size_t utf8_len(char c) {
-        const unsigned char u = (unsigned char) c;
-        return u < 0x80 ? 1 : (u >> 5) == 0x6 ? 2 : (u >> 4) == 0xE ? 3 : (u >> 3) == 0x1E ? 4 : 1;
+protected:
+    // phonemizer is null when the prompt is phonemes
+    virtual int32_t build_utterances(const std::string & prompt, const char * phonemizer_path) = 0;
+
+    void add_utterance(const std::string & phonemes, std::vector<int32_t> && ids) {
+        std::string ids_str;
+        for (int32_t id : ids) {
+            ids_str += " " + std::to_string(id);
+        }
+        LOG_DBG("tts utterance %zu: %s\ntts ids:%s\n", utterances.size(), phonemes.c_str(), ids_str.c_str());
+        utterances.push_back(std::move(ids));
     }
 
     gen_audio_phonemizer phonemizer;
+    std::unordered_map<std::string, int32_t> sym_id;
+    int32_t speaker_id = 0;
+
+private:
     std::vector<std::vector<int32_t>> utterances;
-    size_t   n_done     = 0;
-    int32_t  speaker_id = 0;
-    float    speed      = 0.0f;
+    size_t   n_done = 0;
+    float    speed  = 0.0f;
     std::vector<float> audio_pcm;
     mtmd_helper_gen_audio_outtype out_type = MTMD_HELPER_GEN_AUDIO_OUTTYPE_WAV;
     std::vector<char> out_buf;
+};
+
+// VITS (Piper): the prompt is text with a phonemizer, else phonemes with one utterance per line
+class vits_gen_audio_pipeline : public phoneme_gen_audio_pipeline {
+public:
+    using phoneme_gen_audio_pipeline::phoneme_gen_audio_pipeline;
+
+protected:
+    int32_t build_utterances(const std::string & prompt, const char * phonemizer_path) override {
+        if (!sym_id.count("^") || !sym_id.count("$") || !sym_id.count("_")) {
+            LOG_ERR("mtmd_helper_gen_audio: model has no ^ $ _ symbols\n");
+            return 1;
+        }
+        std::vector<std::string> lines;
+        if (phonemizer_path) {
+            if (!info.espeak_voice) {
+                LOG_ERR("mtmd_helper_gen_audio: the model does not take espeak phonemes\n");
+                return 1;
+            }
+            std::vector<gen_audio_phonemizer::clause> clauses;
+            if (!phonemizer.run(phonemizer_path, {}, info.espeak_voice, prompt, clauses)) {
+                return 1;
+            }
+            lines = piper_sentences(clauses);
+        } else {
+            lines = split_lines(prompt);
+        }
+        // ids are ^ _ (p _)* $, one id per code point
+        for (const auto & line : lines) {
+            std::vector<int32_t> ids = { sym_id["^"], sym_id["_"] };
+            for (const auto & cp : utf8_split(line)) {
+                auto it = sym_id.find(cp);
+                if (it == sym_id.end()) {
+                    if (cp != "\r") {
+                        LOG_WRN("mtmd_helper_gen_audio: skipping unknown phoneme '%s'\n", cp.c_str());
+                    }
+                    continue;
+                }
+                ids.push_back(it->second);
+                ids.push_back(sym_id["_"]);
+            }
+            ids.push_back(sym_id["$"]);
+            if (ids.size() > 3) {
+                add_utterance(line, std::move(ids));
+            }
+        }
+        return 0;
+    }
+};
+
+// Kokoro: the language comes from the first letter of the voice name; with a phonemizer, English text goes
+// through espeak and the misaki fallback mapping (the misaki lexicon is not ported yet)
+// chunks hold at most 510 phonemes and end at a sentence when possible, like KPipeline
+class kokoro_gen_audio_pipeline : public phoneme_gen_audio_pipeline {
+public:
+    using phoneme_gen_audio_pipeline::phoneme_gen_audio_pipeline;
+
+protected:
+    int32_t build_utterances(const std::string & prompt, const char * phonemizer_path) override {
+        const size_t max_phonemes = 510;
+        const char lang = info.speakers ? info.speakers[speaker_id][0] : 'a';
+
+        // pieces of phonemes, each ending a clause; sentence marks a preferred chunk boundary
+        struct piece {
+            std::vector<std::string> cps;
+            bool sentence;
+        };
+        std::vector<std::vector<piece>> paragraphs;
+        if (phonemizer_path) {
+            static const std::map<char, const char *> voices = {
+                { 'a', "en-us" }, { 'b', "en-gb" }, { 'e', "es" }, { 'f', "fr-fr" }, { 'h', "hi" }, { 'i', "it" }, { 'p', "pt-br" },
+            };
+            auto it = voices.find(lang);
+            if (it == voices.end()) {
+                LOG_ERR("mtmd_helper_gen_audio: no espeak voice for language '%c'\n", lang);
+                return 1;
+            }
+            for (const auto & text : split_lines(prompt)) {
+                std::vector<gen_audio_phonemizer::clause> clauses;
+                if (!phonemizer.run(phonemizer_path, { "--tie", "^" }, it->second, text, clauses)) {
+                    return 1;
+                }
+                std::vector<piece> pieces;
+                for (const auto & c : clauses) {
+                    std::string ps = kokoro_from_espeak(c.phonemes, lang) + clause_punctuation(c.terminator);
+                    if (!pieces.empty()) {
+                        ps = " " + ps;
+                    }
+                    pieces.push_back({ utf8_split(ps), c.sentence_end });
+                }
+                paragraphs.push_back(pieces);
+            }
+        } else {
+            for (const auto & line : split_lines(prompt)) {
+                paragraphs.push_back({ { utf8_split(line), true } });
+            }
+        }
+
+        for (const auto & pieces : paragraphs) {
+            std::vector<std::string> cur;
+            size_t last_sentence = 0; // chunk length after the last sentence end
+            auto flush = [&](size_t n) {
+                emit(std::vector<std::string>(cur.begin(), cur.begin() + n));
+                cur.erase(cur.begin(), cur.begin() + n);
+                last_sentence = 0;
+            };
+            for (const auto & p : pieces) {
+                if (cur.size() + p.cps.size() > max_phonemes && !cur.empty()) {
+                    flush(last_sentence > 0 ? last_sentence : cur.size());
+                }
+                cur.insert(cur.end(), p.cps.begin(), p.cps.end());
+                // a single clause longer than the limit is cut at the last space
+                while (cur.size() > max_phonemes) {
+                    size_t cut = max_phonemes;
+                    while (cut > 0 && cur[cut - 1] != " ") {
+                        cut--;
+                    }
+                    flush(cut > 0 ? cut : max_phonemes);
+                }
+                if (p.sentence) {
+                    last_sentence = cur.size();
+                }
+            }
+            if (!cur.empty()) {
+                flush(cur.size());
+            }
+        }
+        return 0;
+    }
+
+private:
+    void emit(std::vector<std::string> cps) {
+        // trim spaces at both ends
+        while (!cps.empty() && cps.front() == " ") {
+            cps.erase(cps.begin());
+        }
+        while (!cps.empty() && cps.back() == " ") {
+            cps.pop_back();
+        }
+        std::string ps;
+        std::vector<int32_t> ids = { 0 };
+        for (const auto & cp : cps) {
+            ps += cp;
+            auto it = sym_id.find(cp);
+            if (it != sym_id.end()) {
+                ids.push_back(it->second);
+            }
+        }
+        ids.push_back(0);
+        if (ids.size() > 2) {
+            add_utterance(ps, std::move(ids));
+        }
+    }
 };
 
 static std::unique_ptr<mtmd_gen_audio_pipeline> make_pipeline(llama_context * lctx, mtmd_context * mctx) {
@@ -1413,6 +1616,8 @@ static std::unique_ptr<mtmd_gen_audio_pipeline> make_pipeline(llama_context * lc
             return std::unique_ptr<mtmd_gen_audio_pipeline>(new pockettts_gen_audio_pipeline(lctx, mctx));
         case MTMD_GEN_AUDIO_TYPE_VITS:
             return std::unique_ptr<mtmd_gen_audio_pipeline>(new vits_gen_audio_pipeline(lctx, mctx));
+        case MTMD_GEN_AUDIO_TYPE_KOKORO:
+            return std::unique_ptr<mtmd_gen_audio_pipeline>(new kokoro_gen_audio_pipeline(lctx, mctx));
         default:
             return nullptr;
     }
