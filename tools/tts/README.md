@@ -86,3 +86,28 @@ llama-tts -mm piper-en_US-lessac-medium.gguf \
 **Note for GGUF conversion:**
 
 A voice is an `.onnx` file plus its `.onnx.json` config from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices). The license is per voice, see its `MODEL_CARD`. The converter is not part of `convert_hf_to_gguf.py` yet.
+
+## Kokoro
+
+Kokoro-82M runs from the mmproj alone, like Piper. The voice packs are stored in the GGUF; `--tts-speaker-id` selects one (0 = first voice given to the converter).
+
+Available params:
+- `--tts-phonemizer` points to [tts-phonemizer-espeak](https://github.com/P-Tillmann/tts-phonemizer-espeak); with it `-p` is text. English text goes through espeak-ng and the misaki fallback mapping (the misaki lexicon is not ported yet)
+- without `--tts-phonemizer`, `-p` is a Kokoro phoneme string (misaki format), one paragraph per line
+- the language follows the first letter of the voice name: `a` American English, `b` British English, `e` Spanish, `f` French, `h` Hindi, `i` Italian, `p` Brazilian Portuguese (Japanese and Chinese are not supported)
+- `--tts-speed` changes the speaking rate (default 1)
+- long input is split into chunks of at most 510 phonemes, at sentence ends when possible
+
+Example usage:
+
+```sh
+llama-tts -mm kokoro-v1_0.gguf \
+    --tts-phonemizer tts-phonemizer-espeak \
+    --tts-speaker-id 0 \
+    -p "Hello world. Is this thing on?" \
+    --output out.wav
+```
+
+**Note for GGUF conversion:**
+
+The converter is not part of `convert_hf_to_gguf.py` yet. It takes `kokoro-v1_0.pth`, `config.json` and one or more voice packs (`voices/*.pt`) from [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0).
