@@ -87,7 +87,14 @@ llama-tts -mm piper-en_US-lessac-medium.gguf \
 
 **Note for GGUF conversion:**
 
-A voice is an `.onnx` file plus its `.onnx.json` config from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices). The license is per voice, see its `MODEL_CARD`. The converter is not part of `convert_hf_to_gguf.py` yet.
+A voice is an `.onnx` file plus its `.onnx.json` config from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices). The license is per voice, see its `MODEL_CARD`; do not redistribute GGUFs of voices with restricted licenses.
+
+```sh
+pip install onnx numpy ./gguf-py
+python tools/tts/convert_piper.py en_US-lessac-medium.onnx --model-card MODEL_CARD --outfile piper-en_US-lessac-medium.gguf
+```
+
+The converter is separate from `convert_hf_to_gguf.py`, since the input is an ONNX export.
 
 ## Kokoro
 
@@ -112,4 +119,11 @@ llama-tts -mm kokoro-v1_0.gguf \
 
 **Note for GGUF conversion:**
 
-The converter is not part of `convert_hf_to_gguf.py` yet. It takes `kokoro-v1_0.pth`, `config.json` and one or more voice packs (`voices/*.pt`) from [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), and the US English lexicons of [misaki](https://github.com/hexgrad/misaki) (all Apache-2.0).
+The converter takes `kokoro-v1_0.pth`, `config.json` and one or more voice packs (`voices/*.pt`) from [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), and optionally the US English lexicons of [misaki](https://github.com/hexgrad/misaki) (`misaki/data/us_gold.json`, `us_silver.json`) for the English G2P; all Apache-2.0.
+
+```sh
+pip install torch numpy ./gguf-py
+python tools/tts/convert_kokoro.py --model kokoro-v1_0.pth --config config.json \
+    --voice voices/af_heart.pt --voice voices/am_michael.pt \
+    --lexicon us_gold.json us_silver.json --outfile kokoro-v1_0.gguf
+```
