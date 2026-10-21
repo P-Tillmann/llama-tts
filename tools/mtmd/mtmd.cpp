@@ -530,6 +530,8 @@ struct mtmd_context {
     std::vector<uint8_t> gen_out_state; // state to feed into the next GEN_WAV call
     std::vector<const char *> gen_symbols;  // c strings of the clip hparams, for mtmd_gen_audio_info
     std::vector<const char *> gen_speakers;
+    std::vector<const char *> gen_lexicon_words;
+    std::vector<const char *> gen_lexicon_phonemes;
 
     bool print_timings;
     int n_threads;
@@ -660,6 +662,12 @@ struct mtmd_context {
             }
             for (const auto & spk : clip_get_hparams(ctx_gen_a)->gen_speakers) {
                 gen_speakers.push_back(spk.c_str());
+            }
+            for (const auto & w : clip_get_hparams(ctx_gen_a)->gen_lexicon_words) {
+                gen_lexicon_words.push_back(w.c_str());
+            }
+            for (const auto & p : clip_get_hparams(ctx_gen_a)->gen_lexicon_phonemes) {
+                gen_lexicon_phonemes.push_back(p.c_str());
             }
         }
         if (ctx_gen_a && clip_get_projector_type(ctx_gen_a) != PROJECTOR_TYPE_VITS && clip_get_projector_type(ctx_gen_a) != PROJECTOR_TYPE_KOKORO) {
@@ -2091,6 +2099,13 @@ mtmd_gen_audio_info mtmd_gen_audio_get_info(const mtmd_context * ctx) {
                 info.n_speakers  = std::max<int32_t>(1, (int32_t) clip_n_gen_speakers(ctx->ctx_gen_a));
                 info.speakers    = ctx->gen_speakers.empty() ? nullptr : ctx->gen_speakers.data();
                 info.espeak_voice = hparams->gen_espeak_voice.empty() ? nullptr : hparams->gen_espeak_voice.c_str();
+                if (!ctx->gen_lexicon_words.empty()) {
+                    info.lexicon_lang     = hparams->gen_lexicon_lang.c_str();
+                    info.n_lexicon        = (int32_t) ctx->gen_lexicon_words.size();
+                    info.n_lexicon_gold   = hparams->gen_lexicon_n_gold;
+                    info.lexicon_words    = ctx->gen_lexicon_words.data();
+                    info.lexicon_phonemes = ctx->gen_lexicon_phonemes.data();
+                }
             } break;
         default:
             info.type = MTMD_GEN_AUDIO_TYPE_NONE;

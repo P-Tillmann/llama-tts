@@ -2067,6 +2067,14 @@ struct clip_model_loader {
                         get_arr_str(KEY_GEN_AUDIO_SYMBOLS,  hparams.gen_symbols);
                         get_arr_str(KEY_GEN_AUDIO_SPEAKERS, hparams.gen_speakers, false);
                         get_string(KEY_GEN_AUDIO_ESPEAK_VOICE, hparams.gen_espeak_voice, false);
+                        get_string(KEY_GEN_AUDIO_LEX_LANG, hparams.gen_lexicon_lang, false);
+                        get_u32(KEY_GEN_AUDIO_LEX_N_GOLD, hparams.gen_lexicon_n_gold, false);
+                        get_arr_str(KEY_GEN_AUDIO_LEX_WORDS,    hparams.gen_lexicon_words,    false);
+                        get_arr_str(KEY_GEN_AUDIO_LEX_PHONEMES, hparams.gen_lexicon_phonemes, false);
+                        if (hparams.gen_lexicon_words.size() != hparams.gen_lexicon_phonemes.size() ||
+                                hparams.gen_lexicon_n_gold < 0 || (size_t) hparams.gen_lexicon_n_gold > hparams.gen_lexicon_words.size()) {
+                            throw std::runtime_error(string_format("%s: invalid lexicon\n", __func__));
+                        }
                         if (hparams.audio_sample_rate <= 0 || !(hparams.gen_length_scale > 0.0f) ||
                                 !(hparams.gen_noise_scale >= 0.0f) || !(hparams.gen_noise_scale_w >= 0.0f)) {
                             throw std::runtime_error(string_format("%s: vits: invalid sample rate or inference defaults\n", __func__));
