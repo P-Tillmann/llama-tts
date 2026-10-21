@@ -102,7 +102,7 @@ The converter is separate from `convert_hf_to_gguf.py`, since the input is an ON
 Kokoro-82M runs from the mmproj alone, like Piper. The voice packs are stored in the GGUF; `--tts-speaker-id` selects one (0 = first voice given to the converter).
 
 Available params:
-- `--tts-phonemizer` points to [tts-phonemizer-espeak](https://github.com/P-Tillmann/tts-phonemizer-espeak); with it `-p` is text. American English uses a port of the misaki G2P with its lexicon (stored in the GGUF); espeak-ng is only used for unknown words. Other languages go through espeak-ng and the misaki mapping. Heteronyms (read, present, ...) are chosen with simple context rules, there is no part-of-speech tagger
+- `--tts-phonemizer` points to [tts-phonemizer-espeak](https://github.com/P-Tillmann/tts-phonemizer-espeak); with it `-p` is text. American and British English use a port of the misaki G2P with its lexicons (stored in the GGUF); espeak-ng is only used for unknown words. Other languages go through espeak-ng and the misaki mapping. Heteronyms (read, present, ...) are chosen with simple context rules, there is no part-of-speech tagger
 - without `--tts-phonemizer`, `-p` is a Kokoro phoneme string (misaki format), one paragraph per line
 - the language follows the first letter of the voice name: `a` American English, `b` British English, `e` Spanish, `f` French, `h` Hindi, `i` Italian, `p` Brazilian Portuguese (Japanese and Chinese are not supported)
 - `--tts-speed` changes the speaking rate (default 1)
@@ -120,11 +120,14 @@ llama-tts -mm kokoro-v1_0.gguf \
 
 **Note for GGUF conversion:**
 
-The converter takes `kokoro-v1_0.pth`, `config.json` and one or more voice packs (`voices/*.pt`) from [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), and optionally the US English lexicons of [misaki](https://github.com/hexgrad/misaki) (`misaki/data/us_gold.json`, `us_silver.json`) for the English G2P; all Apache-2.0.
+The converter takes `kokoro-v1_0.pth`, `config.json` and one or more voice packs (`voices/*.pt`) from [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), and optionally the English lexicons of [misaki](https://github.com/hexgrad/misaki) (`misaki/data/{us,gb}_{gold,silver}.json`) for the English G2P; all Apache-2.0.
 
 ```sh
 pip install torch numpy ./gguf-py
 python tools/tts/convert_kokoro.py --model kokoro-v1_0.pth --config config.json \
-    --voice voices/af_heart.pt --voice voices/am_michael.pt \
-    --lexicon us_gold.json us_silver.json --outfile kokoro-v1_0.gguf
+    --voice voices/af_heart.pt --voice voices/am_michael.pt --voice voices/bf_emma.pt \
+    --lexicon en-us us_gold.json us_silver.json --lexicon en-gb gb_gold.json gb_silver.json \
+    --outfile kokoro-v1_0.gguf
 ```
+
+`--outtype f16` stores the conv and linear weights in F16: half the size (about 185 MB instead of 340 MB), audibly the same, but not faster on CPU. `q8_0` (linear weights only) is supported by the converter but changes the predicted durations and is not recommended.

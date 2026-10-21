@@ -2086,12 +2086,25 @@ struct clip_model_loader {
                                 throw std::runtime_error(string_format("%s: invalid espeak voice name\n", __func__));
                             }
                         }
-                        get_string(KEY_GEN_AUDIO_LEX_LANG, hparams.gen_lexicon_lang, false);
-                        get_u32(KEY_GEN_AUDIO_LEX_N_GOLD, hparams.gen_lexicon_n_gold, false);
-                        get_arr_str(KEY_GEN_AUDIO_LEX_WORDS,    hparams.gen_lexicon_words,    false);
-                        get_arr_str(KEY_GEN_AUDIO_LEX_PHONEMES, hparams.gen_lexicon_phonemes, false);
-                        if (hparams.gen_lexicon_words.size() != hparams.gen_lexicon_phonemes.size() ||
-                                hparams.gen_lexicon_n_gold < 0 || (size_t) hparams.gen_lexicon_n_gold > hparams.gen_lexicon_words.size()) {
+                        std::vector<std::string> lex_langs;
+                        std::vector<int> lex_sizes;
+                        std::vector<int> lex_n_gold;
+                        get_arr_str(KEY_GEN_AUDIO_LEX_LANGS, lex_langs, false);
+                        if (!lex_langs.empty()) {
+                            get_arr_int(KEY_GEN_AUDIO_LEX_SIZES,  lex_sizes);
+                            get_arr_int(KEY_GEN_AUDIO_LEX_N_GOLD, lex_n_gold);
+                            get_arr_str(KEY_GEN_AUDIO_LEX_WORDS,    hparams.gen_lexicon_words);
+                            get_arr_str(KEY_GEN_AUDIO_LEX_PHONEMES, hparams.gen_lexicon_phonemes);
+                        }
+                        bool lex_ok = lex_sizes.size() == lex_langs.size() && lex_n_gold.size() == lex_langs.size() &&
+                                      hparams.gen_lexicon_words.size() == hparams.gen_lexicon_phonemes.size();
+                        size_t lex_offset = 0;
+                        for (size_t i = 0; lex_ok && i < lex_langs.size(); i++) {
+                            lex_ok = lex_sizes[i] >= 0 && lex_n_gold[i] >= 0 && lex_n_gold[i] <= lex_sizes[i];
+                            hparams.gen_lexicons.push_back({ lex_langs[i], lex_n_gold[i], lex_offset, (size_t) lex_sizes[i] });
+                            lex_offset += (size_t) lex_sizes[i];
+                        }
+                        if (!lex_ok || lex_offset != hparams.gen_lexicon_words.size()) {
                             throw std::runtime_error(string_format("%s: invalid lexicon\n", __func__));
                         }
                         if (hparams.audio_sample_rate <= 0 || !(hparams.gen_length_scale > 0.0f) ||
