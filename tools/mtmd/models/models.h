@@ -435,6 +435,41 @@ struct clip_graph_vits : clip_graph {
     void build_wave(ggml_tensor * g);
 };
 
+//
+// kokoro (StyleTTS2 prosody + iSTFTNet): phoneme ids -> PCM, two graphs per call, see clip_encode_kokoro()
+// stage 0: ALBERT, duration encoder, durations, text encoder -> "out_dur", "out_d", "out_t_en" (channel-major)
+// stage 1: frame-expanded features -> F0/N, decoder, harmonic source, generator, iSTFT -> "out_audio" (time-major)
+//
+struct clip_graph_kokoro : clip_graph {
+    clip_graph_kokoro(clip_ctx * ctx, const clip_image_f32 & img, int stage, int n_tokens, int n_frames, float speed, float noise_scale)
+        : clip_graph(ctx, img), stage(stage), n_tokens(n_tokens), n_frames(n_frames), speed(speed), noise_scale(noise_scale) {}
+    ggml_cgraph * build() override;
+
+    int   stage;
+    int   n_tokens;
+    int   n_frames;    // stage 1 only, frames of 600 samples
+    float speed;       // stage 0, divides the durations
+    float noise_scale; // stage 1, scales the harmonic source noise
+
+    ggml_tensor * inp_style = nullptr;
+
+    ggml_tensor * linear(ggml_tensor * x, const clip_kokoro::wb & l) const;
+    ggml_tensor * conv1d_cm(ggml_tensor * x, const clip_kokoro::wb & c) const;
+    ggml_tensor * bilstm(ggml_tensor * x, const clip_kokoro::lstm & l) const;
+    ggml_tensor * ada_layer_norm(ggml_tensor * x, const clip_kokoro::ada & a, ggml_tensor * s) const;
+    ggml_tensor * style(int64_t offset) const;
+
+    ggml_tensor * conv1d_tm(ggml_tensor * x, const clip_kokoro::wb & c, int stride, int pad, int dilation) const;
+    ggml_tensor * conv_transpose1d_tm(ggml_tensor * x, const clip_kokoro::wb & c, int stride, int pad) const;
+    ggml_tensor * adain(ggml_tensor * x, const clip_kokoro::ada & a, ggml_tensor * s) const;
+    ggml_tensor * snake(ggml_tensor * x, ggml_tensor * alpha, ggml_tensor * ialpha) const;
+    ggml_tensor * adain_resblk(ggml_tensor * x, const clip_kokoro::adain_resblk & b, ggml_tensor * s) const;
+    ggml_tensor * adain_resblock1(ggml_tensor * x, const clip_kokoro::adain_resblock1 & b, ggml_tensor * s) const;
+
+    void build_text();
+    void build_wave();
+};
+
 // one persisted state buffer used by code2wav, see qwen3tts-gen.cpp
 struct c2w_state_slot {
     std::string name;

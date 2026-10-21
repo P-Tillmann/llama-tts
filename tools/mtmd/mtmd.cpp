@@ -662,7 +662,7 @@ struct mtmd_context {
                 gen_speakers.push_back(spk.c_str());
             }
         }
-        if (ctx_gen_a && clip_get_projector_type(ctx_gen_a) != PROJECTOR_TYPE_VITS) {
+        if (ctx_gen_a && clip_get_projector_type(ctx_gen_a) != PROJECTOR_TYPE_VITS && clip_get_projector_type(ctx_gen_a) != PROJECTOR_TYPE_KOKORO) {
             int n_embd_gen = clip_n_mmproj_embd(ctx_gen_a);
             if (n_embd_text > 0 && n_embd_text != n_embd_gen) {
                 throw std::runtime_error(string_format(
@@ -2081,9 +2081,10 @@ mtmd_gen_audio_info mtmd_gen_audio_get_info(const mtmd_context * ctx) {
             info.sample_rate = 24000;
             break;
         case PROJECTOR_TYPE_VITS:
+        case PROJECTOR_TYPE_KOKORO:
             {
                 const auto * hparams = clip_get_hparams(ctx->ctx_gen_a);
-                info.type        = MTMD_GEN_AUDIO_TYPE_VITS;
+                info.type        = clip_get_projector_type(ctx->ctx_gen_a) == PROJECTOR_TYPE_VITS ? MTMD_GEN_AUDIO_TYPE_VITS : MTMD_GEN_AUDIO_TYPE_KOKORO;
                 info.sample_rate = hparams->audio_sample_rate;
                 info.n_symbols   = (int32_t) ctx->gen_symbols.size();
                 info.symbols     = ctx->gen_symbols.data();
