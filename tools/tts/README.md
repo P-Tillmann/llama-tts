@@ -65,7 +65,8 @@ python convert_hf_to_gguf.py path/to/pocket-tts/languages/english --mmproj --out
 Piper voices run from the mmproj alone, there is no backbone model (`-m` is not needed).
 
 Available params:
-- `-p` is a phoneme string for now (IPA, as produced by espeak-ng for the voice), one utterance per line. Text input needs a phonemizer and comes later
+- `--tts-phonemizer` points to an external text-to-phoneme program, [tts-phonemizer-espeak](https://github.com/P-Tillmann/tts-phonemizer-espeak) (GPL-3.0, a separate download; llama.cpp does not link espeak-ng). With it, `-p` is text
+- without `--tts-phonemizer`, `-p` is a phoneme string (IPA, as produced by espeak-ng for the voice), one utterance per line
 - `--tts-speaker-id` selects the speaker of a multi-speaker voice (default: 0)
 - `--tts-speed` changes the speaking rate, > 1 is faster (default: from the voice config)
 - `--seed` fixes the noise of the duration predictor and the prior
@@ -73,6 +74,12 @@ Available params:
 Example usage:
 
 ```sh
+llama-tts -mm piper-en_US-lessac-medium.gguf \
+    --tts-phonemizer tts-phonemizer-espeak \
+    -p "Hello world. Is this thing on?" \
+    --output out.wav
+
+# phonemes instead of text
 llama-tts -mm piper-en_US-lessac-medium.gguf \
     -p "həlˈoʊ wˈɜːld." \
     --output out.wav
