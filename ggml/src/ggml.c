@@ -1010,6 +1010,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "SUB",
     "MUL",
     "DIV",
+    "ATAN2",
     "SQR",
     "SQRT",
     "LOG",
@@ -1113,7 +1114,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1126,6 +1127,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "x-y",
     "x*y",
     "x/y",
+    "atan2(x,y)",
     "x^2",
     "√x",
     "log(x)",
@@ -1229,7 +1231,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -2339,6 +2341,23 @@ struct ggml_tensor * ggml_div_inplace(
         struct ggml_tensor  * a,
         struct ggml_tensor  * b) {
     return ggml_div_impl(ctx, a, b, true);
+}
+
+// ggml_atan2
+
+struct ggml_tensor * ggml_atan2(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        struct ggml_tensor  * b) {
+    GGML_ASSERT(ggml_can_repeat(b, a));
+
+    struct ggml_tensor * result = ggml_dup_tensor(ctx, a);
+
+    result->op     = GGML_OP_ATAN2;
+    result->src[0] = a;
+    result->src[1] = b;
+
+    return result;
 }
 
 // ggml_sqr

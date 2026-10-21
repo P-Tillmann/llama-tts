@@ -22,6 +22,10 @@ static inline float op_div(float a, float b) {
     return a / b;
 }
 
+static inline float op_atan2(float a, float b) {
+    return atan2f(a, b);
+}
+
 template <float (*op)(float, float), typename src0_t, typename src1_t, typename dst_t>
 static inline void vec_binary_op_contiguous(const int64_t n, dst_t * z, const src0_t * x, const src1_t * y) {
     constexpr auto src0_to_f32 = type_conversion_table<src0_t>::to_f32;
@@ -151,4 +155,8 @@ void ggml_compute_forward_mul(const ggml_compute_params * params, ggml_tensor * 
 
 void ggml_compute_forward_div(const ggml_compute_params * params, ggml_tensor * dst) {
     binary_op<op_div>(params, dst);
+}
+
+void ggml_compute_forward_atan2(const ggml_compute_params * params, ggml_tensor * dst) {
+    binary_op<op_atan2>(params, dst);
 }

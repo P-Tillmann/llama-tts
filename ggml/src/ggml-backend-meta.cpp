@@ -896,7 +896,8 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
             } break;
             case GGML_OP_SUB:
             case GGML_OP_MUL:
-            case GGML_OP_DIV: {
+            case GGML_OP_DIV:
+            case GGML_OP_ATAN2: {
                 split_state = handle_bin_bcast(src_ss);
             } break;
             case GGML_OP_SQR:

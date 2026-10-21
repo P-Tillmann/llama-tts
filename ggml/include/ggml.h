@@ -500,6 +500,7 @@ extern "C" {
         GGML_OP_SUB,
         GGML_OP_MUL,
         GGML_OP_DIV,
+        GGML_OP_ATAN2,
         GGML_OP_SQR,
         GGML_OP_SQRT,
         GGML_OP_LOG,
@@ -991,6 +992,12 @@ extern "C" {
             struct ggml_tensor  * b);
 
     GGML_API struct ggml_tensor * ggml_div_inplace(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * b);
+
+    // elementwise atan2(a, b) in [-pi, pi], a is y and b is x; b is broadcast to a
+    GGML_API struct ggml_tensor * ggml_atan2(
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
             struct ggml_tensor  * b);
