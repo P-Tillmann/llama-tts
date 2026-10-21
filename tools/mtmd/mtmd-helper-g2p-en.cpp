@@ -1,7 +1,7 @@
 // English G2P for Kokoro, ported from misaki en.py and kokoro pipeline.py (Apache-2.0):
 // https://github.com/hexgrad/misaki, https://github.com/hexgrad/kokoro
-// differences: spaCy is replaced by a rule-based tokenizer with a few part-of-speech rules,
-// so heteronyms mostly use their default pronunciation; num2words is replaced by our own number words
+// spaCy is replaced by a rule-based tokenizer and a small context tagger, heteronyms mostly get their default pronunciation
+// num2words is replaced by our own number words
 
 #include "mtmd-helper-g2p-en.h"
 
@@ -12,16 +12,16 @@
 #include <type_traits>
 #include <unordered_map>
 
-using u32 = std::u32string;
+using ustr = std::u32string;
 using stress_t = std::optional<double>;
-using ps_t = std::optional<u32>;
+using ps_t = std::optional<ustr>;
 
 //
 // strings
 //
 
-static u32 to_u32(const std::string & s) {
-    u32 out;
+static ustr to_u32(const std::string & s) {
+    ustr out;
     for (size_t i = 0; i < s.size(); ) {
         const unsigned char c = (unsigned char) s[i];
         char32_t cp;
@@ -43,7 +43,7 @@ static u32 to_u32(const std::string & s) {
     return out;
 }
 
-static std::string to_u8(const u32 & s) {
+static std::string to_u8(const ustr & s) {
     std::string out;
     for (char32_t cp : s) {
         if (cp < 0x80) {
@@ -87,52 +87,52 @@ static bool is_digit_c(char32_t c) {
 static bool is_space_c(char32_t c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
-static u32 lower(u32 s) {
+static ustr lower(ustr s) {
     for (auto & c : s) {
         c = lower_c(c);
     }
     return s;
 }
-static u32 upper(u32 s) {
+static ustr upper(ustr s) {
     for (auto & c : s) {
         c = upper_c(c);
     }
     return s;
 }
 // Python str.capitalize(): first upper, rest lower
-static u32 capitalize(u32 s) {
+static ustr capitalize(ustr s) {
     s = lower(s);
     if (!s.empty()) {
         s[0] = upper_c(s[0]);
     }
     return s;
 }
-static bool is_alpha(const u32 & s) {
+static bool is_alpha(const ustr & s) {
     return !s.empty() && std::all_of(s.begin(), s.end(), is_letter);
 }
-static bool is_digits(const u32 & s) {
+static bool is_digits(const ustr & s) {
     return !s.empty() && std::all_of(s.begin(), s.end(), is_digit_c);
 }
-static bool has(const u32 & s, char32_t c) {
-    return s.find(c) != u32::npos;
+static bool has(const ustr & s, char32_t c) {
+    return s.find(c) != ustr::npos;
 }
-static bool starts_with(const u32 & s, const u32 & p) {
+static bool starts_with(const ustr & s, const ustr & p) {
     return s.size() >= p.size() && s.compare(0, p.size(), p) == 0;
 }
-static bool ends_with(const u32 & s, const u32 & p) {
+static bool ends_with(const ustr & s, const ustr & p) {
     return s.size() >= p.size() && s.compare(s.size() - p.size(), p.size(), p) == 0;
 }
-static u32 replace_all(u32 s, const u32 & from, const u32 & to) {
-    for (size_t pos = s.find(from); pos != u32::npos; pos = s.find(from, pos + to.size())) {
+static ustr replace_all(ustr s, const ustr & from, const ustr & to) {
+    for (size_t pos = s.find(from); pos != ustr::npos; pos = s.find(from, pos + to.size())) {
         s.replace(pos, from.size(), to);
     }
     return s;
 }
-static u32 remove_c(u32 s, char32_t c) {
+static ustr remove_c(ustr s, char32_t c) {
     s.erase(std::remove(s.begin(), s.end(), c), s.end());
     return s;
 }
-static u32 head(const u32 & s, size_t n_drop) {
+static ustr head(const ustr & s, size_t n_drop) {
     return s.substr(0, s.size() - std::min(n_drop, s.size()));
 }
 
@@ -142,16 +142,16 @@ static u32 head(const u32 & s, size_t n_drop) {
 
 static const char32_t PRIMARY   = U'ˈ';
 static const char32_t SECONDARY = U'ˌ';
-static const u32 STRESSES         = U"ˌˈ";
-static const u32 DIPHTHONGS       = U"AIOQWYʤʧ";
-static const u32 VOWELS           = U"AIOQWYaiuæɑɒɔəɛɜɪʊʌᵻ";
-static const u32 CONSONANTS       = U"bdfhjklmnpstvwzðŋɡɹɾʃʒʤʧθ";
-static const u32 US_TAUS          = U"AIOWYiuæɑəɛɪɹʊʌ";
-static const u32 PUNCTS           = U";:,.!?—…\"“”";
-static const u32 NON_QUOTE_PUNCTS = U";:,.!?—…";
-static const u32 SUBTOKEN_JUNKS   = U"',-._‘’/";
+static const ustr STRESSES         = U"ˌˈ";
+static const ustr DIPHTHONGS       = U"AIOQWYʤʧ";
+static const ustr VOWELS           = U"AIOQWYaiuæɑɒɔəɛɜɪʊʌᵻ";
+static const ustr CONSONANTS       = U"bdfhjklmnpstvwzðŋɡɹɾʃʒʤʧθ";
+static const ustr US_TAUS          = U"AIOWYiuæɑəɛɪɹʊʌ";
+static const ustr PUNCTS           = U";:,.!?—…\"“”";
+static const ustr NON_QUOTE_PUNCTS = U";:,.!?—…";
+static const ustr SUBTOKEN_JUNKS   = U"',-._‘’/";
 
-static int stress_weight(const u32 & ps) {
+static int stress_weight(const ustr & ps) {
     int w = 0;
     for (char32_t c : ps) {
         w += has(DIPHTHONGS, c) ? 2 : 1;
@@ -159,12 +159,12 @@ static int stress_weight(const u32 & ps) {
     return w;
 }
 
-static bool has_vowel(const u32 & ps) {
+static bool has_vowel(const ustr & ps) {
     return std::any_of(ps.begin(), ps.end(), [](char32_t c) { return has(VOWELS, c); });
 }
 
 // move each stress mark right before the next vowel
-static u32 restress(const u32 & ps) {
+static ustr restress(const ustr & ps) {
     std::vector<std::pair<double, char32_t>> ips;
     for (size_t i = 0; i < ps.size(); i++) {
         ips.push_back({ (double) i, ps[i] });
@@ -180,14 +180,14 @@ static u32 restress(const u32 & ps) {
         }
     }
     std::sort(ips.begin(), ips.end());
-    u32 out;
+    ustr out;
     for (const auto & p : ips) {
         out += p.second;
     }
     return out;
 }
 
-static u32 apply_stress(const u32 & ps, stress_t stress) {
+static ustr apply_stress(const ustr & ps, stress_t stress) {
     if (!stress) {
         return ps;
     }
@@ -197,13 +197,13 @@ static u32 apply_stress(const u32 & ps, stress_t stress) {
         return remove_c(remove_c(ps, PRIMARY), SECONDARY);
     }
     if (s == -1 || ((s == 0 || s == -0.5) && has(ps, PRIMARY))) {
-        return replace_all(remove_c(ps, SECONDARY), u32(1, PRIMARY), u32(1, SECONDARY));
+        return replace_all(remove_c(ps, SECONDARY), ustr(1, PRIMARY), ustr(1, SECONDARY));
     }
     if ((s == 0 || s == 0.5 || s == 1) && no_stress) {
         return has_vowel(ps) ? restress(SECONDARY + ps) : ps;
     }
     if (s >= 1 && !has(ps, PRIMARY) && has(ps, SECONDARY)) {
-        return replace_all(ps, u32(1, SECONDARY), u32(1, PRIMARY));
+        return replace_all(ps, ustr(1, SECONDARY), ustr(1, PRIMARY));
     }
     if (s > 1 && no_stress) {
         return has_vowel(ps) ? restress(PRIMARY + ps) : ps;
@@ -288,15 +288,44 @@ static std::string num_year(int64_t n) {
     return num_cardinal(hi) + " " + low;
 }
 
+// digits to int64, false if empty, not all digits or too long
+static bool parse_digits(const std::string & s, int64_t & v) {
+    if (s.empty() || s.size() > 18 || !std::all_of(s.begin(), s.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+        return false;
+    }
+    v = std::stoll(s);
+    return true;
+}
+
+// cardinal words, numbers too long for int64 are read digit by digit
+static std::string num_cardinal_str(const std::string & s) {
+    int64_t v;
+    if (parse_digits(s, v)) {
+        return num_cardinal(v);
+    }
+    std::string out;
+    for (char c : s) {
+        if (c >= '0' && c <= '9') {
+            out += (out.empty() ? "" : " ") + std::string(NUM_ONES[c - '0']);
+        }
+    }
+    return out;
+}
+
+static std::string num_ordinal_str(const std::string & s) {
+    int64_t v;
+    return parse_digits(s, v) ? num_ordinal(v) : num_cardinal_str(s);
+}
+
 // num2words(float(word)); word is [0-9]*.[0-9]*
-static std::string num_float(const u32 & word) {
+static std::string num_float(const ustr & word) {
     const size_t dot = word.find('.');
     std::string ip = to_u8(word.substr(0, dot));
-    std::string fp = dot == u32::npos ? "" : to_u8(word.substr(dot + 1));
+    std::string fp = dot == ustr::npos ? "" : to_u8(word.substr(dot + 1));
     while (!fp.empty() && fp.back() == '0') {
         fp.pop_back();
     }
-    std::string out = num_cardinal(ip.empty() ? 0 : std::stoll(ip));
+    std::string out = ip.empty() ? std::string("zero") : num_cardinal_str(ip);
     if (!fp.empty()) {
         out += " point";
         for (char c : fp) {
@@ -307,8 +336,8 @@ static std::string num_float(const u32 & word) {
 }
 
 // re.split(r'[^a-z]+', s)
-static std::vector<u32> split_az(const std::string & s) {
-    std::vector<u32> out(1);
+static std::vector<ustr> split_az(const std::string & s) {
+    std::vector<ustr> out(1);
     bool in_sep = false;
     for (char c : s) {
         if (c >= 'a' && c <= 'z') {
@@ -332,15 +361,15 @@ static std::vector<u32> split_az(const std::string & s) {
 //
 
 struct mtoken {
-    u32 text;
+    ustr text;
     std::string tag;
-    u32 whitespace;
+    ustr whitespace;
     ps_t phonemes;
     bool is_head = true;
     ps_t alias;
     stress_t stress;
     char32_t currency = 0;
-    u32 num_flags;
+    ustr num_flags;
     bool prespace = false;
 };
 
@@ -373,7 +402,7 @@ static mtoken merge_tokens(const std::vector<mtoken> & tks, const ps_t & unk) {
     }
     m.whitespace = tks.back().whitespace;
     if (unk) {
-        u32 ps;
+        ustr ps;
         for (const auto & tk : tks) {
             if (tk.prespace && !ps.empty() && !is_space_c(ps.back()) && tk.phonemes && !tk.phonemes->empty()) {
                 ps += U' ';
@@ -404,14 +433,14 @@ static mtoken merge_tokens(const std::vector<mtoken> & tks, const ps_t & unk) {
 }
 
 // regex.findall of misaki's SUBTOKEN_REGEX, alternatives tried in order at each position
-static std::vector<u32> subtokenize(const u32 & w) {
+static std::vector<ustr> subtokenize(const ustr & w) {
     auto is_apos = [](char32_t c) { return c == U'\'' || c == U'‘' || c == U'’'; };
-    std::vector<u32> out;
+    std::vector<ustr> out;
     const size_t n = w.size();
     size_t p = 0;
     while (p < n) {
         size_t e = p;
-        // ^['‘’]+
+        // ^['\u2018\u2019]+
         if (p == 0 && is_apos(w[0])) {
             while (e < n && is_apos(w[e])) {
                 e++;
@@ -447,13 +476,13 @@ static std::vector<u32> subtokenize(const u32 & w) {
                 e++;
             }
         }
-        // ['‘’]{2,}
+        // ['\u2018\u2019]{2,}
         if (e == p && is_apos(w[p]) && p + 1 < n && is_apos(w[p + 1])) {
             while (e < n && is_apos(w[e])) {
                 e++;
             }
         }
-        // \p{L}*?(?:['‘’]\p{L})*?\p{Ll}(?=\p{Lu}): shortest letter run ending lower case before an upper case letter
+        // \p{L}*?(?:['\u2018\u2019]\p{L})*?\p{Ll}(?=\p{Lu}): shortest letter run ending lower case before an upper case letter
         if (e == p && is_letter(w[p])) {
             for (size_t k = p; k + 1 < n && is_letter(w[k]); k++) {
                 if (is_lower_letter(w[k]) && is_upper(w[k + 1])) {
@@ -462,7 +491,7 @@ static std::vector<u32> subtokenize(const u32 & w) {
                 }
             }
         }
-        // \p{L}+(?:['‘’]\p{L})*
+        // \p{L}+(?:['\u2018\u2019]\p{L})*
         if (e == p && is_letter(w[p])) {
             while (e < n && is_letter(w[e])) {
                 e++;
@@ -471,11 +500,11 @@ static std::vector<u32> subtokenize(const u32 & w) {
                 e += 2;
             }
         }
-        // [^-_\p{L}'‘’\d]
+        // [^-_\p{L}'\u2018\u2019\d]
         if (e == p && !(w[p] == U'-' || w[p] == U'_' || is_letter(w[p]) || is_apos(w[p]) || is_digit_c(w[p]))) {
             e = p + 1;
         }
-        // ['‘’]+$
+        // ['\u2018\u2019]+$
         if (e == p && is_apos(w[p])) {
             size_t q = p;
             while (q < n && is_apos(w[q])) {
@@ -506,8 +535,8 @@ struct lex_entry {
 
 struct g2p_en::impl {
     bool british;
-    std::unordered_map<u32, lex_entry> golds;
-    std::unordered_map<u32, u32> silvers;
+    std::unordered_map<ustr, lex_entry> golds;
+    std::unordered_map<ustr, ustr> silvers;
 
     static std::string parent_tag(const std::string & tag) {
         if (tag.rfind("VB", 0) == 0) return "VERB";
@@ -522,13 +551,13 @@ struct g2p_en::impl {
         return it == golds.end() ? ps_t() : it->second.def;
     }
 
-    ps_t get_NNP(const u32 & word) const {
-        u32 ps;
+    ps_t get_NNP(const ustr & word) const {
+        ustr ps;
         for (char32_t c : word) {
             if (!is_letter(c)) {
                 continue;
             }
-            auto it = golds.find(u32(1, upper_c(c)));
+            auto it = golds.find(ustr(1, upper_c(c)));
             if (it == golds.end() || !it->second.def) {
                 return {};
             }
@@ -536,15 +565,15 @@ struct g2p_en::impl {
         }
         ps = apply_stress(ps, 0.0);
         const size_t pos = ps.rfind(SECONDARY);
-        if (pos != u32::npos) {
+        if (pos != ustr::npos) {
             ps[pos] = PRIMARY;
         }
         return ps;
     }
 
-    ps_t get_special_case(const u32 & word, const std::string & tag, stress_t stress, const token_ctx & ctx) const {
-        static const std::map<u32, const char32_t *> add_symbols = { { U".", U"dot" }, { U"/", U"slash" } };
-        static const std::map<u32, const char32_t *> symbols = { { U"%", U"percent" }, { U"&", U"and" }, { U"+", U"plus" }, { U"@", U"at" } };
+    ps_t get_special_case(const ustr & word, const std::string & tag, stress_t stress, const token_ctx & ctx) const {
+        static const std::map<ustr, const char32_t *> add_symbols = { { U".", U"dot" }, { U"/", U"slash" } };
+        static const std::map<ustr, const char32_t *> symbols = { { U"%", U"percent" }, { U"&", U"and" }, { U"+", U"plus" }, { U"@", U"at" } };
         if (tag == "ADD" && add_symbols.count(word)) {
             return lookup(add_symbols.at(word), "", -0.5, &ctx);
         }
@@ -553,7 +582,7 @@ struct g2p_en::impl {
         }
         {
             // abbreviations like U.S.A.: spell the letters
-            u32 stripped = word;
+            ustr stripped = word;
             while (!stripped.empty() && stripped.front() == U'.') stripped.erase(0, 1);
             while (!stripped.empty() && stripped.back() == U'.') stripped.pop_back();
             size_t longest = 0;
@@ -567,7 +596,7 @@ struct g2p_en::impl {
             }
         }
         if (word == U"a" || word == U"A") {
-            return tag == "DT" ? u32(U"ɐ") : u32(U"ˈA");
+            return tag == "DT" ? ustr(U"ɐ") : ustr(U"ˈA");
         }
         if (word == U"am" || word == U"Am" || word == U"AM") {
             if (tag.rfind("NN", 0) == 0) {
@@ -576,31 +605,31 @@ struct g2p_en::impl {
             if (!ctx.future_vowel || word != U"am" || (stress && *stress > 0)) {
                 return gold_default(U"am");
             }
-            return u32(U"ɐm");
+            return ustr(U"ɐm");
         }
         if (word == U"an" || word == U"An" || word == U"AN") {
             if (word == U"AN" && tag.rfind("NN", 0) == 0) {
                 return get_NNP(word);
             }
-            return u32(U"ɐn");
+            return ustr(U"ɐn");
         }
         if (word == U"I" && tag == "PRP") {
-            return u32(U"ˌI");
+            return ustr(U"ˌI");
         }
         if ((word == U"by" || word == U"By" || word == U"BY") && parent_tag(tag) == "ADV") {
-            return u32(U"bˈI");
+            return ustr(U"bˈI");
         }
         if (word == U"to" || word == U"To" || (word == U"TO" && (tag == "TO" || tag == "IN"))) {
             if (!ctx.future_vowel) {
                 return gold_default(U"to");
             }
-            return *ctx.future_vowel ? u32(U"tʊ") : u32(U"tə");
+            return *ctx.future_vowel ? ustr(U"tʊ") : ustr(U"tə");
         }
         if (word == U"in" || word == U"In" || (word == U"IN" && tag != "NNP")) {
-            return (!ctx.future_vowel || tag != "IN" ? u32(1, PRIMARY) : u32()) + U"ɪn";
+            return (!ctx.future_vowel || tag != "IN" ? ustr(1, PRIMARY) : ustr()) + U"ɪn";
         }
         if (word == U"the" || word == U"The" || (word == U"THE" && tag == "DT")) {
-            return ctx.future_vowel && *ctx.future_vowel ? u32(U"ði") : u32(U"ðə");
+            return ctx.future_vowel && *ctx.future_vowel ? ustr(U"ði") : ustr(U"ðə");
         }
         if (tag == "IN" && (lower(word) == U"vs" || lower(word) == U"vs.")) {
             return lookup(U"versus", "", {}, &ctx);
@@ -617,8 +646,8 @@ struct g2p_en::impl {
         return {};
     }
 
-    bool is_known(const u32 & word, const std::string & /*tag*/) const {
-        static const u32 symbols = U"%&+@";
+    bool is_known(const ustr & word, const std::string & /*tag*/) const {
+        static const ustr symbols = U"%&+@";
         if (golds.count(word) || (word.size() == 1 && has(symbols, word[0])) || silvers.count(word)) {
             return true;
         }
@@ -635,7 +664,7 @@ struct g2p_en::impl {
         return word.substr(1) == upper(word.substr(1));
     }
 
-    ps_t lookup(u32 word, std::string tag, stress_t stress, const token_ctx * ctx) const {
+    ps_t lookup(ustr word, std::string tag, stress_t stress, const token_ctx * ctx) const {
         bool is_nnp = false;
         if (word == upper(word) && !golds.count(word)) {
             word = lower(word);
@@ -689,11 +718,11 @@ struct g2p_en::impl {
         return *stem + U"z";
     }
 
-    ps_t stem_s(const u32 & word, const std::string & tag, stress_t stress, const token_ctx * ctx) const {
+    ps_t stem_s(const ustr & word, const std::string & tag, stress_t stress, const token_ctx * ctx) const {
         if (word.size() < 3 || !ends_with(word, U"s")) {
             return {};
         }
-        u32 stem;
+        ustr stem;
         if (!ends_with(word, U"ss") && is_known(head(word, 1), tag)) {
             stem = head(word, 1);
         } else if ((ends_with(word, U"'s") || (word.size() > 4 && ends_with(word, U"es") && !ends_with(word, U"ies"))) && is_known(head(word, 2), tag)) {
@@ -710,7 +739,7 @@ struct g2p_en::impl {
         if (!stem || stem->empty()) {
             return {};
         }
-        const u32 & s = *stem;
+        const ustr & s = *stem;
         const char32_t c = s.back();
         if (has(U"pkfθʃsʧ", c)) {
             return s + U"t";
@@ -730,11 +759,11 @@ struct g2p_en::impl {
         return s + U"ᵻd";
     }
 
-    ps_t stem_ed(const u32 & word, const std::string & tag, stress_t stress, const token_ctx * ctx) const {
+    ps_t stem_ed(const ustr & word, const std::string & tag, stress_t stress, const token_ctx * ctx) const {
         if (word.size() < 4 || !ends_with(word, U"d")) {
             return {};
         }
-        u32 stem;
+        ustr stem;
         if (!ends_with(word, U"dd") && is_known(head(word, 1), tag)) {
             stem = head(word, 1);
         } else if (word.size() > 4 && ends_with(word, U"ed") && !ends_with(word, U"eed") && is_known(head(word, 2), tag)) {
@@ -749,7 +778,7 @@ struct g2p_en::impl {
         if (!stem || stem->empty()) {
             return {};
         }
-        const u32 & s = *stem;
+        const ustr & s = *stem;
         if (british) {
             if (has(U"əː", s.back())) {
                 return {};
@@ -760,11 +789,11 @@ struct g2p_en::impl {
         return s + U"ɪŋ";
     }
 
-    ps_t stem_ing(const u32 & word, const std::string & tag, stress_t stress, const token_ctx * ctx) const {
+    ps_t stem_ing(const ustr & word, const std::string & tag, stress_t stress, const token_ctx * ctx) const {
         if (word.size() < 5 || !ends_with(word, U"ing")) {
             return {};
         }
-        u32 stem;
+        ustr stem;
         // ([bcdgklmnprstvxz])\1ing$|cking$
         auto doubled = [&]() {
             if (ends_with(word, U"cking")) {
@@ -785,12 +814,12 @@ struct g2p_en::impl {
         return suffix_ing(lookup(stem, tag, stress, ctx));
     }
 
-    ps_t get_word(u32 word, const std::string & tag, stress_t stress, const token_ctx & ctx) const {
+    ps_t get_word(ustr word, const std::string & tag, stress_t stress, const token_ctx & ctx) const {
         ps_t sc = get_special_case(word, tag, stress, ctx);
         if (sc) {
             return sc;
         }
-        const u32 wl = lower(word);
+        const ustr wl = lower(word);
         if (word.size() > 1 && is_alpha(remove_c(word, U'\'')) && word != wl && (tag != "NNP" || word.size() > 7) &&
                 !golds.count(word) && !silvers.count(word) && (word == upper(word) || word.substr(1) == lower(word.substr(1))) &&
                 (golds.count(wl) || silvers.count(wl) || stem_s(wl, tag, stress, &ctx) || stem_ed(wl, tag, stress, &ctx) || stem_ing(wl, tag, stress, &ctx))) {
@@ -817,7 +846,7 @@ struct g2p_en::impl {
         return {};
     }
 
-    static bool is_currency(const u32 & word) {
+    static bool is_currency(const ustr & word) {
         const size_t dots = std::count(word.begin(), word.end(), U'.');
         if (dots == 0) {
             return true;
@@ -828,7 +857,7 @@ struct g2p_en::impl {
         return word.size() - word.find(U'.') - 1 < 3;
     }
 
-    static bool is_number(u32 word, bool is_head) {
+    static bool is_number(ustr word, bool is_head) {
         if (std::none_of(word.begin(), word.end(), is_digit_c)) {
             return false;
         }
@@ -847,13 +876,13 @@ struct g2p_en::impl {
         return true;
     }
 
-    ps_t get_number(u32 word, char32_t currency, bool is_head, const u32 & num_flags) const {
+    ps_t get_number(ustr word, char32_t currency, bool is_head, const ustr & num_flags) const {
         // trailing [a-z']+
         size_t k = word.size();
         while (k > 0 && ((word[k - 1] >= 'a' && word[k - 1] <= 'z') || word[k - 1] == U'\'')) {
             k--;
         }
-        const u32 suffix = word.substr(k);
+        const ustr suffix = word.substr(k);
         word = word.substr(0, k);
         const bool ordinal_suffix = suffix == U"st" || suffix == U"nd" || suffix == U"rd" || suffix == U"th";
         std::vector<ps_t> result;
@@ -870,8 +899,8 @@ struct g2p_en::impl {
                 }
             }
         };
-        auto extend_num = [&](const u32 & num) {
-            extend_words(num_cardinal(std::stoll(to_u8(num))));
+        auto extend_num = [&](const ustr & num) {
+            extend_words(num_cardinal_str(to_u8(num)));
         };
         const bool digits = is_digits(word);
         const bool has_dot = has(word, U'.');
@@ -879,17 +908,19 @@ struct g2p_en::impl {
             return {};
         }
         if (digits && ordinal_suffix) {
-            extend_words(num_ordinal(std::stoll(to_u8(word))));
+            extend_words(num_ordinal_str(to_u8(word)));
         } else if (result.empty() && word.size() == 4 && !CURRENCIES.count(currency) && digits) {
-            extend_words(num_year(std::stoll(to_u8(word))));
+            int64_t year = 0;
+            parse_digits(to_u8(word), year);
+            extend_words(num_year(year));
         } else if (!is_head && !has_dot) {
-            const u32 num = remove_c(word, U',');
+            const ustr num = remove_c(word, U',');
             if (num.empty()) {
                 return {};
             }
             if (num[0] == U'0' || num.size() > 3) {
                 for (char32_t c : num) {
-                    extend_num(u32(1, c));
+                    extend_num(ustr(1, c));
                 }
             } else if (num.size() == 3 && !ends_with(num, U"00")) {
                 extend_num(num.substr(0, 1));
@@ -904,14 +935,14 @@ struct g2p_en::impl {
             }
         } else if (std::count(word.begin(), word.end(), U'.') > 1 || !is_head) {
             bool first = true;
-            u32 rest = remove_c(word, U',');
+            ustr rest = remove_c(word, U',');
             size_t pos = 0;
             while (pos <= rest.size()) {
                 size_t e = rest.find(U'.', pos);
-                if (e == u32::npos) {
+                if (e == ustr::npos) {
                     e = rest.size();
                 }
-                const u32 num = rest.substr(pos, e - pos);
+                const ustr num = rest.substr(pos, e - pos);
                 pos = e + 1;
                 if (num.empty()) {
                     first = false;
@@ -920,7 +951,7 @@ struct g2p_en::impl {
                 const bool spell = num[0] == U'0' || (num.size() != 2 && std::any_of(num.begin() + 1, num.end(), [](char32_t c) { return c != U'0'; }));
                 if (spell) {
                     for (char32_t c : num) {
-                        extend_num(u32(1, c));
+                        extend_num(ustr(1, c));
                     }
                 } else {
                     extend_num(num);
@@ -928,16 +959,20 @@ struct g2p_en::impl {
                 first = false;
             }
             (void) first;
-        } else if (CURRENCIES.count(currency) && is_currency(word)) {
+        } else if (CURRENCIES.count(currency) && is_currency(word) && remove_c(word, U',').size() <= 18) {
             const auto & units = CURRENCIES.at(currency);
-            const u32 w = remove_c(word, U',');
+            const ustr w = remove_c(word, U',');
             const size_t dot = w.find(U'.');
             std::vector<std::pair<int64_t, std::string>> pairs;
-            const u32 major = w.substr(0, dot);
-            pairs.push_back({ major.empty() ? 0 : std::stoll(to_u8(major)), units.first });
-            if (dot != u32::npos) {
-                const u32 minor = w.substr(dot + 1);
-                pairs.push_back({ minor.empty() ? 0 : std::stoll(to_u8(minor)), units.second });
+            const ustr major = w.substr(0, dot);
+            int64_t v_major = 0;
+            parse_digits(to_u8(major), v_major);
+            pairs.push_back({ v_major, units.first });
+            if (dot != ustr::npos) {
+                const ustr minor = w.substr(dot + 1);
+                int64_t v_minor = 0;
+                parse_digits(to_u8(minor), v_minor);
+                pairs.push_back({ v_minor, units.second });
             }
             if (pairs.size() > 1) {
                 if (pairs[1].first == 0) {
@@ -951,7 +986,7 @@ struct g2p_en::impl {
                     result.push_back(lookup(U"and", "", {}, nullptr));
                 }
                 extend_words(num_cardinal(pairs[i].first));
-                const u32 unit = to_u32(pairs[i].second);
+                const ustr unit = to_u32(pairs[i].second);
                 if (std::abs(pairs[i].first) != 1 && unit != U"pence") {
                     result.push_back(stem_s(unit + U"s", "", {}, nullptr));
                 } else {
@@ -961,12 +996,12 @@ struct g2p_en::impl {
         } else {
             std::string words;
             if (digits) {
-                words = num_cardinal(std::stoll(to_u8(word)));
+                words = num_cardinal_str(to_u8(word));
             } else if (!has_dot) {
-                const int64_t v = std::stoll(to_u8(remove_c(word, U',')));
-                words = ordinal_suffix ? num_ordinal(v) : num_cardinal(v);
+                const std::string v = to_u8(remove_c(word, U','));
+                words = ordinal_suffix ? num_ordinal_str(v) : num_cardinal_str(v);
             } else {
-                const u32 w = remove_c(word, U',');
+                const ustr w = remove_c(word, U',');
                 if (w[0] == U'.') {
                     words = "point";
                     for (char32_t c : w.substr(1)) {
@@ -983,7 +1018,7 @@ struct g2p_en::impl {
         if (result.empty()) {
             return {};
         }
-        u32 ps;
+        ustr ps;
         for (size_t i = 0; i < result.size(); i++) {
             if (!result[i]) {
                 return {};
@@ -1002,7 +1037,7 @@ struct g2p_en::impl {
         return ps;
     }
 
-    u32 append_currency(const u32 & ps, char32_t currency) const {
+    ustr append_currency(const ustr & ps, char32_t currency) const {
         auto it = CURRENCIES.find(currency);
         if (it == CURRENCIES.end()) {
             return ps;
@@ -1012,7 +1047,7 @@ struct g2p_en::impl {
     }
 
     ps_t lexicon(const mtoken & tk, const token_ctx & ctx) const {
-        u32 word = tk.alias ? *tk.alias : tk.text;
+        ustr word = tk.alias ? *tk.alias : tk.text;
         word = replace_all(replace_all(word, U"‘", U"'"), U"’", U"'");
         const stress_t stress = word == lower(word) ? stress_t() : stress_t(word == upper(word) ? 2.0 : 0.5);
         ps_t ps = get_word(word, tk.tag, stress, ctx);
@@ -1030,7 +1065,7 @@ struct g2p_en::impl {
     // tokenizer, a rule-based stand-in for the spaCy English tokenizer and tagger
     //
 
-    static std::string tag_of(const u32 & t, const u32 & next, bool opening) {
+    static std::string tag_of(const ustr & t, const ustr & next, bool opening) {
         if (t == U"." || t == U"!" || t == U"?" || t == U"?!" || t == U"!?") return ".";
         if (t == U",") return ",";
         if (t == U";" || t == U":" || t == U"..." || t == U"…" || t == U"--" || t == U"—" || t == U"–") return ":";
@@ -1048,7 +1083,7 @@ struct g2p_en::impl {
             const bool num = std::all_of(t.begin(), t.end(), [](char32_t c) { return is_digit_c(c) || c == U',' || c == U'.' || c == U':' || c == U'-'; });
             return num ? "CD" : "";
         }
-        const u32 tl = lower(t);
+        const ustr tl = lower(t);
         if (tl == U"hundred" || tl == U"thousand" || tl == U"million" || tl == U"billion" || tl == U"trillion") return "CD";
         if (tl == U"a" || tl == U"an" || tl == U"the") return "DT";
         if (t == U"I") return "PRP";
@@ -1062,14 +1097,14 @@ struct g2p_en::impl {
     }
 
     // coarse part of speech from the previous word, enough to pick most heteronym variants of the lexicon
-    static std::string context_tag(const u32 & prev) {
-        static const std::set<u32> verb_before = {
+    static std::string context_tag(const ustr & prev) {
+        static const std::set<ustr> verb_before = {
             U"to", U"can", U"could", U"will", U"would", U"shall", U"should", U"may", U"might", U"must",
             U"do", U"does", U"did", U"not", U"n't", U"n’t", U"'ll", U"’ll", U"'d", U"’d",
         };
-        static const std::set<u32> pronouns  = { U"i", U"you", U"we", U"they", U"he", U"she", U"it" };
-        static const std::set<u32> be_forms  = { U"was", U"were", U"is", U"are", U"be", U"been", U"being", U"am", U"'re", U"’re" };
-        static const std::set<u32> noun_before = {
+        static const std::set<ustr> pronouns  = { U"i", U"you", U"we", U"they", U"he", U"she", U"it" };
+        static const std::set<ustr> be_forms  = { U"was", U"were", U"is", U"are", U"be", U"been", U"being", U"am", U"'re", U"’re" };
+        static const std::set<ustr> noun_before = {
             U"the", U"a", U"an", U"this", U"these", U"those", U"his", U"her", U"my", U"your", U"our", U"their", U"its",
             U"some", U"any", U"no", U"every", U"each",
         };
@@ -1081,17 +1116,40 @@ struct g2p_en::impl {
         return "";
     }
 
-    static std::vector<mtoken> tokenize(const u32 & text) {
-        static const std::set<u32> abbrevs = {
+    // "that" is DT (stressed in the lexicon) as a demonstrative, else IN or WDT like spaCy tags it
+    static std::string that_tag(const ustr & prev, const ustr & next) {
+        static const std::set<ustr> clause_start = { U"", U".", U"!", U"?", U"\"", U"\u201c", U"(", U"and", U"but", U"or", U"so" };
+        static const std::set<ustr> subjects = {
+            U"i", U"you", U"we", U"they", U"he", U"she", U"it", U"there", U"the", U"a", U"an", U"this", U"these", U"those",
+            U"nobody", U"everybody", U"everyone", U"someone", U"something", U"everything", U"nothing",
+        };
+        static const std::set<ustr> aux = {
+            U"is", U"are", U"was", U"were", U"will", U"would", U"can", U"could", U"should", U"may", U"might", U"must",
+            U"has", U"have", U"had", U"does", U"did",
+        };
+        const ustr n = lower(next);
+        auto ends = [&](const ustr & e) { return n.size() > e.size() + 1 && n.compare(n.size() - e.size(), e.size(), e) == 0; };
+        // conjunction before a clause, "not that"
+        if (subjects.count(n) || lower(prev) == U"not") return "IN";
+        if (clause_start.count(lower(prev)) || n == U"'s" || n == U"\u2019s") return "DT";
+        // relative before a verb: aux, past tense, 3rd person -s (a demonstrative takes a singular noun)
+        if (aux.count(n) || ends(U"ed") || (ends(U"s") && !ends(U"ss") && !ends(U"us") && !ends(U"is"))) return "WDT";
+        // before a name
+        if (!next.empty() && next[0] != lower(next)[0]) return "IN";
+        return "DT";
+    }
+
+    static std::vector<mtoken> tokenize(const ustr & text) {
+        static const std::set<ustr> abbrevs = {
             U"mr", U"mrs", U"ms", U"dr", U"prof", U"st", U"jr", U"sr", U"vs", U"etc", U"e.g", U"i.e", U"inc", U"ltd",
             U"jan", U"feb", U"apr", U"jul", U"aug", U"sep", U"sept", U"oct", U"nov", U"dec", U"approx",
         };
-        static const std::vector<u32> contractions = { U"n't", U"n’t", U"'s", U"’s", U"'m", U"’m", U"'d", U"’d", U"'ll", U"’ll", U"'re", U"’re", U"'ve", U"’ve" };
-        static const u32 prefix_chars = U"\"'([{“‘$£€#¿¡*";
-        static const u32 suffix_chars = U",;:!?)]}\"”’'%";
+        static const std::vector<ustr> contractions = { U"n't", U"n’t", U"'s", U"’s", U"'m", U"’m", U"'d", U"’d", U"'ll", U"’ll", U"'re", U"’re", U"'ve", U"’ve" };
+        static const ustr prefix_chars = U"\"'([{“‘$£€#¿¡*";
+        static const ustr suffix_chars = U",;:!?)]}\"”’'%";
 
         struct piece {
-            u32 text;
+            ustr text;
             bool opening;
         };
         std::vector<std::pair<std::vector<piece>, bool>> chunks; // pieces, whitespace after
@@ -1107,7 +1165,7 @@ struct g2p_en::impl {
             if (e == i) {
                 break;
             }
-            u32 s = text.substr(i, e - i);
+            ustr s = text.substr(i, e - i);
             const bool ws = e < text.size();
             i = e;
 
@@ -1122,7 +1180,7 @@ struct g2p_en::impl {
                     changed = true;
                     continue;
                 }
-                for (const u32 & el : { u32(U"..."), u32(U"…"), u32(U"--"), u32(U"—") }) {
+                for (const ustr & el : { ustr(U"..."), ustr(U"…"), ustr(U"--"), ustr(U"—") }) {
                     if (s.size() > el.size() && ends_with(s, el)) {
                         post.insert(post.begin(), { el, false });
                         s = head(s, el.size());
@@ -1141,7 +1199,7 @@ struct g2p_en::impl {
                     continue;
                 }
                 if (s.size() > 1 && s.back() == U'.') {
-                    const u32 body = lower(head(s, 1));
+                    const ustr body = lower(head(s, 1));
                     // dotted letter groups like U.S.A or Ph.D, as in Lexicon.get_special_case()
                     size_t longest = 0;
                     size_t cur_len = 0;
@@ -1152,13 +1210,13 @@ struct g2p_en::impl {
                     const bool dotted = has(body, U'.') && is_alpha(remove_c(body, U'.')) && longest < 3;
                     const bool abbrev = dotted || abbrevs.count(body);
                     if (!abbrev) {
-                        post.insert(post.begin(), { u32(U"."), false });
+                        post.insert(post.begin(), { ustr(U"."), false });
                         s = head(s, 1);
                         changed = true;
                         continue;
                     }
                 }
-                for (const u32 & c : contractions) {
+                for (const ustr & c : contractions) {
                     if (s.size() > c.size() && ends_with(lower(s), c)) {
                         post.insert(post.begin(), { s.substr(s.size() - c.size()), false });
                         s = head(s, c.size());
@@ -1169,7 +1227,7 @@ struct g2p_en::impl {
             }
             // infixes: dashes, hyphens between letters
             std::vector<piece> mid;
-            u32 cur;
+            ustr cur;
             for (size_t k = 0; k < s.size(); k++) {
                 const bool dash2 = s[k] == U'-' && k + 1 < s.size() && s[k + 1] == U'-';
                 const bool emdash = s[k] == U'—';
@@ -1179,7 +1237,7 @@ struct g2p_en::impl {
                         mid.push_back({ cur, false });
                         cur.clear();
                     }
-                    mid.push_back({ dash2 ? u32(U"--") : u32(1, s[k]), false });
+                    mid.push_back({ dash2 ? ustr(U"--") : ustr(1, s[k]), false });
                     if (dash2) {
                         k++;
                     }
@@ -1197,7 +1255,7 @@ struct g2p_en::impl {
         }
 
         std::vector<mtoken> tokens;
-        std::vector<std::pair<u32, bool>> flat;
+        std::vector<std::pair<ustr, bool>> flat;
         std::vector<bool> ws_after;
         for (const auto & c : chunks) {
             for (size_t k = 0; k < c.first.size(); k++) {
@@ -1209,11 +1267,13 @@ struct g2p_en::impl {
             mtoken tk;
             tk.text = flat[k].first;
             tk.whitespace = ws_after[k] ? U" " : U"";
-            const u32 next = k + 1 < flat.size() ? flat[k + 1].first : u32();
+            const ustr next = k + 1 < flat.size() ? flat[k + 1].first : ustr();
             // a straight quote opens if it starts a chunk
             const bool opening = flat[k].second || k == 0 || (k > 0 && ws_after[k - 1]);
             tk.tag = tag_of(tk.text, next, opening);
-            if (k > 0 && (tk.tag.empty() || (lower(tk.text) == U"used" && context_tag(lower(flat[k - 1].first)) == "VBN?"))) {
+            if (lower(tk.text) == U"that") {
+                tk.tag = that_tag(k > 0 ? flat[k - 1].first : ustr(), next);
+            } else if (k > 0 && (tk.tag.empty() || (lower(tk.text) == U"used" && context_tag(lower(flat[k - 1].first)) == "VBN?"))) {
                 tk.tag = context_tag(lower(flat[k - 1].first));
             }
             tokens.push_back(tk);
@@ -1258,15 +1318,15 @@ struct g2p_en::impl {
                     // nothing
                 } else if (tk.tag == "$" && tk.text.size() == 1 && CURRENCIES.count(tk.text[0])) {
                     currency = tk.text[0];
-                    tk.phonemes = u32();
+                    tk.phonemes = ustr();
                 } else if (tk.tag == ":" && (tk.text == U"-" || tk.text == U"–")) {
-                    tk.phonemes = u32(U"—");
+                    tk.phonemes = ustr(U"—");
                 } else if (punct_tags.count(tk.tag) && !std::all_of(tk.text.begin(), tk.text.end(), [](char32_t c) { char32_t l = lower_c(c); return l >= 'a' && l <= 'z'; })) {
                     auto it = punct_tag_phonemes.find(tk.tag);
                     if (it != punct_tag_phonemes.end()) {
-                        tk.phonemes = u32(it->second);
+                        tk.phonemes = ustr(it->second);
                     } else {
-                        u32 p;
+                        ustr p;
                         for (char32_t c : tk.text) {
                             if (has(PUNCTS, c)) {
                                 p += c;
@@ -1282,7 +1342,7 @@ struct g2p_en::impl {
                     }
                 } else if (j > 0 && j + 1 < tks.size() && tk.text == U"2" && !tks[j - 1].text.empty() && !tks[j + 1].text.empty() &&
                            is_letter(tks[j - 1].text.back()) && is_letter(tks[j + 1].text[0])) {
-                    tk.alias = u32(U"to");
+                    tk.alias = ustr(U"to");
                 }
                 if (tk.alias || tk.phonemes) {
                     words.push_back({ { tk }, false });
@@ -1318,7 +1378,7 @@ struct g2p_en::impl {
     }
 
     static void resolve_tokens(std::vector<mtoken> & tokens) {
-        u32 text;
+        ustr text;
         for (size_t i = 0; i + 1 < tokens.size(); i++) {
             text += tokens[i].text + tokens[i].whitespace;
         }
@@ -1336,7 +1396,7 @@ struct g2p_en::impl {
                 if (i + 1 == tokens.size() && tk.text.size() == 1 && has(NON_QUOTE_PUNCTS, tk.text[0])) {
                     tk.phonemes = tk.text;
                 } else if (std::all_of(tk.text.begin(), tk.text.end(), [](char32_t c) { return has(SUBTOKEN_JUNKS, c); })) {
-                    tk.phonemes = u32();
+                    tk.phonemes = ustr();
                 }
             } else if (i > 0) {
                 tk.prespace = prespace;
@@ -1379,7 +1439,7 @@ struct g2p_en::impl {
     }
 
     // G2P.__call__ for one paragraph, returns the merged tokens
-    std::vector<mtoken> g2p(const u32 & text, const fallback_t & fallback) const {
+    std::vector<mtoken> g2p(const ustr & text, const fallback_t & fallback) const {
         std::vector<word_t> words = retokenize(tokenize(text));
         auto run_fallback = [&](const mtoken & tk) -> ps_t {
             std::string ps;
@@ -1419,7 +1479,7 @@ struct g2p_en::impl {
                 if (ps) {
                     w.tks[left].phonemes = ps;
                     for (size_t k = left + 1; k < right; k++) {
-                        w.tks[k].phonemes = u32();
+                        w.tks[k].phonemes = ustr();
                     }
                     ctx = token_context(ctx, ps, merged);
                     right = left;
@@ -1431,7 +1491,7 @@ struct g2p_en::impl {
                     mtoken & tk = w.tks[right];
                     if (!tk.phonemes) {
                         if (std::all_of(tk.text.begin(), tk.text.end(), [](char32_t c) { return has(SUBTOKEN_JUNKS, c); })) {
-                            tk.phonemes = u32();
+                            tk.phonemes = ustr();
                         } else if (fallback) {
                             should_fallback = true;
                             break;
@@ -1444,7 +1504,7 @@ struct g2p_en::impl {
                 mtoken merged = merge_tokens(w.tks, {});
                 w.tks[0].phonemes = run_fallback(merged);
                 for (size_t k = 1; k < w.tks.size(); k++) {
-                    w.tks[k].phonemes = u32();
+                    w.tks[k].phonemes = ustr();
                 }
             } else {
                 resolve_tokens(w.tks);
@@ -1452,7 +1512,7 @@ struct g2p_en::impl {
         }
         std::vector<mtoken> out;
         for (auto & w : words) {
-            mtoken tk = w.is_list ? merge_tokens(w.tks, u32()) : w.tks[0];
+            mtoken tk = w.is_list ? merge_tokens(w.tks, ustr()) : w.tks[0];
             if (tk.phonemes) {
                 // Kokoro v1.0 symbols
                 tk.phonemes = replace_all(replace_all(*tk.phonemes, U"ɾ", U"T"), U"ʔ", U"t");
@@ -1469,15 +1529,15 @@ struct g2p_en::impl {
 
 g2p_en::g2p_en(const char * const * words, const char * const * phonemes, int32_t n, int32_t n_gold, bool british) : p(new impl()) {
     p->british = british;
-    std::unordered_map<u32, lex_entry> golds;
-    std::unordered_map<u32, u32> silvers;
+    std::unordered_map<ustr, lex_entry> golds;
+    std::unordered_map<ustr, ustr> silvers;
     for (int32_t i = 0; i < n; i++) {
-        const u32 w  = to_u32(words[i]);
-        const u32 ph = to_u32(phonemes[i]);
+        const ustr w  = to_u32(words[i]);
+        const ustr ph = to_u32(phonemes[i]);
         const ps_t v = ph.empty() ? ps_t() : ps_t(ph);
         if (i < n_gold) {
             const size_t tab = w.find(U'\t');
-            if (tab == u32::npos) {
+            if (tab == ustr::npos) {
                 golds[w].def = v;
             } else {
                 golds[w.substr(0, tab)].tags[to_u8(w.substr(tab + 1))] = v;
@@ -1488,9 +1548,9 @@ g2p_en::g2p_en(const char * const * words, const char * const * phonemes, int32_
     }
     // Lexicon.grow_dictionary(): add the capitalized / lower case forms, existing entries win
     auto grow = [](auto & d) {
-        std::vector<std::pair<u32, typename std::decay_t<decltype(d)>::mapped_type>> e;
+        std::vector<std::pair<ustr, typename std::decay_t<decltype(d)>::mapped_type>> e;
         for (const auto & kv : d) {
-            const u32 & k = kv.first;
+            const ustr & k = kv.first;
             if (k.size() < 2) {
                 continue;
             }
@@ -1520,16 +1580,16 @@ std::vector<std::string> g2p_en::phonemize(const std::string & text, const fallb
     // KPipeline.en_tokenize(): chunks of at most 510 phonemes, split at the last punctuation when possible
     const size_t max_len = 510;
     auto tokens_to_ps = [](const std::vector<mtoken> & tks, size_t n) {
-        u32 ps;
+        ustr ps;
         for (size_t i = 0; i < n; i++) {
-            ps += (tks[i].phonemes ? *tks[i].phonemes : u32()) + (tks[i].whitespace.empty() ? U"" : U" ");
+            ps += (tks[i].phonemes ? *tks[i].phonemes : ustr()) + (tks[i].whitespace.empty() ? U"" : U" ");
         }
         while (!ps.empty() && is_space_c(ps.front())) ps.erase(0, 1);
         while (!ps.empty() && is_space_c(ps.back())) ps.pop_back();
         return ps;
     };
     auto waterfall_last = [&](const std::vector<mtoken> & tks, size_t next_count) {
-        for (const u32 & set : { u32(U"!.?…"), u32(U":;"), u32(U",—") }) {
+        for (const ustr & set : { ustr(U"!.?…"), ustr(U":;"), ustr(U",—") }) {
             size_t z = 0;
             bool found = false;
             for (size_t i = tks.size(); i-- > 0; ) {
@@ -1559,15 +1619,15 @@ std::vector<std::string> g2p_en::phonemize(const std::string & text, const fallb
     size_t pcount = 0;
     for (mtoken t : tokens) {
         if (!t.phonemes) {
-            t.phonemes = u32();
+            t.phonemes = ustr();
         }
-        u32 next_ps = *t.phonemes + (t.whitespace.empty() ? U"" : U" ");
-        u32 trimmed = next_ps;
+        ustr next_ps = *t.phonemes + (t.whitespace.empty() ? U"" : U" ");
+        ustr trimmed = next_ps;
         while (!trimmed.empty() && is_space_c(trimmed.back())) trimmed.pop_back();
         const size_t next_pcount = pcount + trimmed.size();
         if (next_pcount > max_len) {
             const size_t z = waterfall_last(tks, next_pcount);
-            const u32 ps = tokens_to_ps(tks, z);
+            const ustr ps = tokens_to_ps(tks, z);
             if (!ps.empty()) {
                 chunks.push_back(to_u8(ps.substr(0, max_len)));
             }
@@ -1581,7 +1641,7 @@ std::vector<std::string> g2p_en::phonemize(const std::string & text, const fallb
         pcount += next_ps.size();
     }
     if (!tks.empty()) {
-        const u32 ps = tokens_to_ps(tks, tks.size());
+        const ustr ps = tokens_to_ps(tks, tks.size());
         if (!ps.empty()) {
             chunks.push_back(to_u8(ps.substr(0, max_len)));
         }
@@ -1608,8 +1668,8 @@ std::string g2p_en::from_espeak(const std::string & ipa, char lang) {
             ps = replace_all(ps, r[0], r[1]);
         }
         // syllabic consonants: X + U+0329 -> schwa X
-        const u32 cps = to_u32(ps);
-        u32 out;
+        const ustr cps = to_u32(ps);
+        ustr out;
         for (size_t i = 0; i < cps.size(); i++) {
             if (i + 1 < cps.size() && cps[i + 1] == U'\u0329' && !is_space_c(cps[i])) {
                 out += U'ᵊ';

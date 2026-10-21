@@ -2235,7 +2235,7 @@ static int32_t mtmd_gen_audio_process_impl(mtmd_context * ctx, const mtmd_gen_in
     params.imgs        = &batch;
     params.n_threads   = ctx->n_threads;
     params.gen_process = CLIP_GEN_PROCESS_GEN_WAV;
-    // gen_wav draws no randomness, but keep the seed so it does not reseed mid-generation
+    // vits and kokoro draw their noise here; the rng is reseeded only when the seed changes
     params.seed        = inp->seed;
     params.codes       = has_codes ? &in_codes : nullptr;
     params.feats       = has_feats ? &in_feats : nullptr;

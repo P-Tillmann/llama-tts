@@ -4,6 +4,9 @@
 #include <cmath>
 #include <vector>
 
+// M_PI needs _USE_MATH_DEFINES on MSVC
+static const double kokoro_pi = 3.14159265358979323846;
+
 // the text side is channel-major (ne0 = channels), the frame side is time-major (ne0 = time):
 // instance norms over time are then plain ggml_norm, and convs need no transposes
 
@@ -69,8 +72,8 @@ static void kokoro_cumsum_f64_cpu(ggml_tensor * dst, const ggml_tensor * a, int 
     }
 }
 
-// x300 linear upsampling along ne0 (align_corners=False) with the arithmetic of torch upsample_linear1d on the CPU,
-// including its fused multiply-adds: the phase is large, so one rounding step changes the sine
+// x300 linear upsampling along ne0 (align_corners=False) on the CPU, same arithmetic as torch upsample_linear1d incl. its FMAs
+// the phase is large, so one rounding step changes the sine
 static void kokoro_upsample300_cpu(ggml_tensor * dst, int ith, int nth, void * /*userdata*/) {
     const ggml_tensor * a = dst->src[0];
     const int64_t n_in  = a->ne[0];
@@ -239,7 +242,7 @@ void clip_graph_kokoro::build_text() {
         // gelu_new (tanh approximation) written out, the CPU ggml_gelu uses an f16 table
         ggml_tensor * ff = linear(x, { layer.ff_up_w, layer.ff_up_b });
         ggml_tensor * inner = ggml_add(ctx0, ff, ggml_scale(ctx0, ggml_mul(ctx0, ggml_sqr(ctx0, ff), ff), 0.044715f));
-        inner = ggml_tanh(ctx0, ggml_scale(ctx0, inner, sqrtf(2.0f / (float) M_PI)));
+        inner = ggml_tanh(ctx0, ggml_scale(ctx0, inner, sqrtf(2.0f / (float) kokoro_pi)));
         ff = ggml_mul(ctx0, ggml_scale(ctx0, ff, 0.5f), ggml_scale_bias(ctx0, inner, 1.0f, 1.0f));
         ff = linear(ff, { layer.ff_down_w, layer.ff_down_b });
         x = build_norm(ggml_add(ctx0, x, ff), layer.ln_2_w, layer.ln_2_b, NORM_TYPE_NORMAL, eps, il);
@@ -362,12 +365,12 @@ void clip_graph_kokoro::build_wave() {
         cb(x, "dec_decode", i);
     }
 
-    // harmonic source, computed at twice the frame rate first: in SineGen._f02sine() the 1/300 linear
-    // downsample of the nearest-upsampled f0 is exactly the frame value, and the random initial phase has no effect
+    // harmonic source, first at twice the frame rate: in SineGen._f02sine() the 1/300 downsample of the upsampled f0 is the frame value
+    // the random initial phase has no effect
     ggml_tensor * rad = ggml_div(ctx0, ggml_mul(ctx0, ggml_repeat_4d(ctx0, f0, f0->ne[0], 9, 1, 1), inp_harm), inp_sr);
     rad = ggml_sub(ctx0, rad, ggml_floor(ctx0, rad));
     ggml_tensor * phase = ggml_map_custom1(ctx0, rad, kokoro_cumsum_f64_cpu, GGML_N_TASKS_MAX, nullptr);
-    phase = ggml_scale(ctx0, ggml_scale(ctx0, ggml_scale(ctx0, phase, 2.0f), (float) M_PI), 300.0f);
+    phase = ggml_scale(ctx0, ggml_scale(ctx0, ggml_scale(ctx0, phase, 2.0f), (float) kokoro_pi), 300.0f);
     ggml_tensor * args[] = { phase };
     phase = ggml_custom_4d(ctx0, GGML_TYPE_F32, n_samples, 9, 1, 1, args, 1, kokoro_upsample300_cpu, GGML_N_TASKS_MAX, nullptr);
     phase = ggml_cont(ctx0, ggml_transpose(ctx0, phase));

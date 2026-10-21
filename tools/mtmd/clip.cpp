@@ -2067,6 +2067,11 @@ struct clip_model_loader {
                         get_arr_str(KEY_GEN_AUDIO_SYMBOLS,  hparams.gen_symbols);
                         get_arr_str(KEY_GEN_AUDIO_SPEAKERS, hparams.gen_speakers, false);
                         get_string(KEY_GEN_AUDIO_ESPEAK_VOICE, hparams.gen_espeak_voice, false);
+                        for (char c : hparams.gen_espeak_voice) {
+                            if ((unsigned char) c < 0x20) {
+                                throw std::runtime_error(string_format("%s: invalid espeak voice name\n", __func__));
+                            }
+                        }
                         get_string(KEY_GEN_AUDIO_LEX_LANG, hparams.gen_lexicon_lang, false);
                         get_u32(KEY_GEN_AUDIO_LEX_N_GOLD, hparams.gen_lexicon_n_gold, false);
                         get_arr_str(KEY_GEN_AUDIO_LEX_WORDS,    hparams.gen_lexicon_words,    false);
@@ -3422,6 +3427,11 @@ struct clip_model_loader {
                     // the graph hard-codes the Kokoro v1.0 layout
                     if (ko.voices->ne[0] != 256 || ko.voices->ne[1] != 510 || ko.voices->type != GGML_TYPE_F32 ||
                             ko.bert_pos_embd->ne[1] != 512 || ko.dur_proj.w->ne[1] != 50 || ko.conv_post.w->ne[2] != 22 ||
+                            ko.bert_tok_embd->ne[1] != ko.text_tok_embd->ne[1] ||
+                            hparams.n_head <= 0 || hparams.n_embd % hparams.n_head != 0 ||
+                            ko.text_conv[0].w->ne[0] % 2 != 1 || ko.text_conv[1].w->ne[0] % 2 != 1 || ko.text_conv[2].w->ne[0] % 2 != 1 ||
+                            ko.dur_lstm.w_ih->ne[0] != 2 * ko.dur_enc_lstm[2].w_hh->ne[0] + 128 ||
+                            ko.shared_lstm.w_ih->ne[0] != ko.dur_lstm.w_ih->ne[0] ||
                             ko.ups[0].w->ne[0] != 20 || ko.ups[1].w->ne[0] != 12 || ko.l_linear.w->ne[0] != 9 ||
                             (int64_t) hparams.gen_symbols.size() != ko.text_tok_embd->ne[1] ||
                             (int64_t) hparams.gen_speakers.size() != ko.voices->ne[2]) {
@@ -3557,8 +3567,40 @@ struct clip_model_loader {
                             fail("upsample kernel");
                         }
                     }
-                    if (vits.enc_rel_k[0]->ne[1] % 2 != 1 || vits.enc_proj.w->ne[1] % 4 != 0) {
+                    if (vits.enc_layers.empty() || hparams.n_head <= 0 || hparams.n_embd % hparams.n_head != 0 || vits.enc_proj.w->ne[1] % 4 != 0) {
                         fail("encoder layout");
+                    }
+                    const int64_t d_head = hparams.n_embd / hparams.n_head;
+                    const int64_t n_rel  = vits.enc_rel_k[0]->ne[1];
+                    for (size_t il = 0; il < vits.enc_layers.size(); il++) {
+                        const auto * rk = vits.enc_rel_k[il];
+                        const auto * rv = vits.enc_rel_v[il];
+                        if (n_rel % 2 != 1 || rk->ne[0] != d_head || rk->ne[1] != n_rel || rv->ne[0] != n_rel || rv->ne[1] != d_head ||
+                                rk->type != GGML_TYPE_F32 || rv->type != GGML_TYPE_F32) {
+                            fail("relative attention layout");
+                        }
+                    }
+                    // "same" convs need an odd kernel
+                    auto odd = [](const ggml_tensor * w) { return w->ne[0] % 2 == 1; };
+                    bool convs_ok = odd(vits.dec_conv_pre.w) && odd(vits.dec_conv_post_w);
+                    for (const auto & l : vits.enc_layers) {
+                        convs_ok = convs_ok && odd(l.ff_up_w) && odd(l.ff_down_w);
+                    }
+                    for (const auto & f : vits.flows) {
+                        for (const auto & c : f.wn_in) {
+                            convs_ok = convs_ok && odd(c.w);
+                        }
+                    }
+                    for (const auto & rb : vits.dec_res) {
+                        for (const auto & c : rb.c1) {
+                            convs_ok = convs_ok && odd(c.w);
+                        }
+                        for (const auto & c : rb.c2) {
+                            convs_ok = convs_ok && odd(c.w);
+                        }
+                    }
+                    if (!convs_ok) {
+                        fail("even conv kernel");
                     }
                     if (vits.dp_ea_m->ne[0] != 2 || vits.dp_ea_scale->ne[0] != 2) {
                         fail("duration predictor layout");
@@ -5318,7 +5360,7 @@ static bool clip_encode_kokoro(clip_ctx * ctx, clip_encode_params * params) {
     }
 
     // round half to even like torch.round, at least one frame per token
-    const int64_t max_frames = 2048;
+    const int64_t max_frames = 4096;
     std::vector<int32_t> idx;
     for (int64_t i = 0; i < n_tokens; i++) {
         const float r = std::nearbyint(dur[i]);
@@ -5335,16 +5377,17 @@ static bool clip_encode_kokoro(clip_ctx * ctx, clip_encode_params * params) {
     // constants: periodic Hann window, STFT basis [22][20] (re, -im), one-sided inverse basis [20][22] with the window
     const int n_fft = 20;
     const int hop   = 5;
+    const double pi = 3.14159265358979323846;
     std::vector<double> win(n_fft);
     for (int n = 0; n < n_fft; n++) {
-        win[n] = 0.5 - 0.5 * std::cos(2.0 * M_PI * n / n_fft);
+        win[n] = 0.5 - 0.5 * std::cos(2.0 * pi * n / n_fft);
     }
     std::vector<float> stft(22 * n_fft);
     std::vector<float> istft(n_fft * 22);
     for (int j = 0; j <= n_fft / 2; j++) {
         const double coef = (j == 0 || j == n_fft / 2) ? 1.0 / n_fft : 2.0 / n_fft;
         for (int n = 0; n < n_fft; n++) {
-            const double a = 2.0 * M_PI * j * n / n_fft;
+            const double a = 2.0 * pi * j * n / n_fft;
             const double sn = (j == 0 || j == n_fft / 2) ? 0.0 : std::sin(a);
             stft[(j)      * n_fft + n] = (float) ( win[n] * std::cos(a));
             stft[(j + 11) * n_fft + n] = (float) (-win[n] * sn);
