@@ -420,6 +420,15 @@ enum mtmd_gen_audio_type {
     MTMD_GEN_AUDIO_TYPE_KOKORO, // same, speakers are voice packs
 };
 
+// pronunciation lexicon for the text frontend
+struct mtmd_gen_lexicon {
+    const char *         lang;     // e.g. "en-us"
+    int32_t              n;
+    int32_t              n_gold;   // the first n_gold entries are preferred over the rest
+    const char * const * words;    // "word", or "word\tPOS" for a part-of-speech variant
+    const char * const * phonemes; // "" means no pronunciation
+};
+
 struct mtmd_gen_audio_info {
     enum mtmd_gen_audio_type type;
     int32_t sample_rate; // in Hz, for example 24000 for qwen3tts
@@ -432,12 +441,9 @@ struct mtmd_gen_audio_info {
     const char * const * speakers;   // speaker name per id, nullptr if the model has none
     const char *         espeak_voice; // espeak-ng voice of the symbols (e.g. "en-us"), nullptr if they are not espeak phonemes
 
-    // pronunciation lexicon for the text frontend, 0 / nullptr if the model has none
-    const char *         lexicon_lang;     // e.g. "en-us"
-    int32_t              n_lexicon;
-    int32_t              n_lexicon_gold;   // the first n_lexicon_gold entries are preferred over the rest
-    const char * const * lexicon_words;    // "word", or "word\tPOS" for a part-of-speech variant
-    const char * const * lexicon_phonemes; // "" means no pronunciation
+    // pronunciation lexicons, one per language, 0 / nullptr if the model has none
+    int32_t                         n_lexicons;
+    const struct mtmd_gen_lexicon * lexicons;
 };
 
 MTMD_API struct mtmd_gen_audio_info mtmd_gen_audio_get_info(const mtmd_context * ctx);

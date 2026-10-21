@@ -1696,6 +1696,11 @@ std::string g2p_en::from_espeak(const std::string & ipa, char lang) {
         ps = replace_all(ps, "ʔ", "t");
         return replace_all(ps, "^", "");
     }
+    // language_switch='remove-flags': drop the "(en)" markers around words of another language
+    for (size_t b = ps.find('('); b != std::string::npos; b = ps.find('(', b)) {
+        const size_t e = ps.find(')', b);
+        ps.erase(b, e == std::string::npos ? std::string::npos : e - b + 1);
+    }
     // EspeakG2P.e2m, keys in sorted order
     static const char * e2m[][2] = {
         { "a^ɪ", "I" }, { "a^ʊ", "W" }, { "d^z", "ʣ" }, { "d^ʒ", "ʤ" }, { "e^ɪ", "A" }, { "o^ʊ", "O" },

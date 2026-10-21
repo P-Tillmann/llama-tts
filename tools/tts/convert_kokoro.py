@@ -9,6 +9,7 @@
 # - Snake alpha and 1/alpha are stored as [1, C, 1] (ggml ne [1, C]) for time-major broadcasting
 # - depthwise ConvTranspose1d (AdainResBlk1d pool) taps are stored as [K, C]
 # - voice packs [510, 1, 256] are stacked into a.gen.voices [n_voices, 510, 256], one speaker per voice
+# - --outtype f16: conv and linear weights in F16; q8_0: linear weights in Q8_0 (rows of 32), convs in F16
 
 import argparse
 import json
@@ -29,8 +30,10 @@ def main():
     ap.add_argument("--config", required=True, help="config.json")
     ap.add_argument("--voice", action="append", default=[], help="voice pack .pt, repeat for more voices")
     ap.add_argument("--outfile", required=True)
-    ap.add_argument("--lexicon", nargs=2, metavar=("GOLD", "SILVER"),
-                    help="misaki us_gold.json and us_silver.json (Apache-2.0, https://github.com/hexgrad/misaki), for the English G2P")
+    ap.add_argument("--lexicon", nargs=3, action="append", default=[], metavar=("LANG", "GOLD", "SILVER"),
+                    help="misaki lexicons for the English G2P (Apache-2.0, https://github.com/hexgrad/misaki), "
+                         "e.g. en-us us_gold.json us_silver.json or en-gb gb_gold.json gb_silver.json")
+    ap.add_argument("--outtype", choices=["f32", "f16", "q8_0"], default="f32")
     args = ap.parse_args()
 
     cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
@@ -63,27 +66,36 @@ def main():
         return (g * v / n).astype(np.float32)
 
     tensors = {}
+    qtypes = {}
 
-    def put(name, a):
+    # kind: "conv" or "linear" for weights that may be stored in a smaller type, others stay F32
+    def put(name, a, kind=None):
         assert name not in tensors, name
-        tensors[name] = np.ascontiguousarray(a, dtype=np.float32)
+        a = np.ascontiguousarray(a, dtype=np.float32)
+        qtype = gguf.GGMLQuantizationType.F32
+        if kind and args.outtype != "f32" and a.ndim >= 2:
+            qtype = gguf.GGMLQuantizationType.F16
+            if kind == "linear" and args.outtype == "q8_0" and a.shape[-1] % 32 == 0:
+                qtype = gguf.GGMLQuantizationType.Q8_0
+        tensors[name] = a
+        qtypes[name] = qtype
 
     def put_conv(dst, src, bias=True):
-        put(dst + ".weight", wn(src))
+        put(dst + ".weight", wn(src), "conv")
         if bias:
             put(dst + ".bias", get(src + ".bias"))
 
     def put_linear(dst, src):
-        put(dst + ".weight", get(src + ".weight"))
+        put(dst + ".weight", get(src + ".weight"), "linear")
         put(dst + ".bias", get(src + ".bias"))
 
     def put_ada(dst, src):
         # fc: style -> [gamma; beta]
         w, b = get(src + ".fc.weight"), get(src + ".fc.bias")
         c = w.shape[0] // 2
-        put(dst + ".gamma.weight", w[:c])
+        put(dst + ".gamma.weight", w[:c], "linear")
         put(dst + ".gamma.bias", b[:c] + 1.0)
-        put(dst + ".beta.weight", w[c:])
+        put(dst + ".beta.weight", w[c:], "linear")
         put(dst + ".beta.bias", b[c:])
 
     def put_lstm(dst, src):
@@ -91,7 +103,7 @@ def main():
         b = np.concatenate([get(src + ".bias_ih_l0") + get(src + ".bias_hh_l0"),
                             get(src + ".bias_ih_l0_reverse") + get(src + ".bias_hh_l0_reverse")], 0)
         w_hh = np.stack([get(src + ".weight_hh_l0"), get(src + ".weight_hh_l0_reverse")], 0)
-        put(dst + ".w_ih", w_ih)
+        put(dst + ".w_ih", w_ih, "linear")
         put(dst + ".b", b)
         put(dst + ".w_hh", w_hh)
 
@@ -197,25 +209,32 @@ def main():
         sys.exit("at least one --voice is needed")
     put("a.gen.voices", np.stack(packs, 0))
 
-    # lexicon: gold entries first, then silver; heteronyms as "word\tTAG", None as ""
-    lex_words, lex_phonemes = [], []
-    gold   = json.loads(Path(args.lexicon[0]).read_text(encoding="utf-8")) if args.lexicon else {}
-    silver = json.loads(Path(args.lexicon[1]).read_text(encoding="utf-8")) if args.lexicon else {}
-    for w, v in gold.items():
-        if isinstance(v, dict):
-            lex_words.append(w)
-            lex_phonemes.append(v["DEFAULT"] or "")
-            for tag, ps in v.items():
-                if tag != "DEFAULT":
-                    lex_words.append(f"{w}\t{tag}")
-                    lex_phonemes.append(ps or "")
-        else:
+    # lexicons: per language gold entries first, then silver; heteronyms as "word\tTAG", None as ""
+    lex_langs, lex_sizes, lex_n_gold, lex_words, lex_phonemes = [], [], [], [], []
+    for lang, gold_path, silver_path in args.lexicon:
+        if lang not in ("en-us", "en-gb") or lang in lex_langs:
+            sys.exit(f"--lexicon {lang}: expected en-us or en-gb, once each")
+        gold = json.loads(Path(gold_path).read_text(encoding="utf-8"))
+        silver = json.loads(Path(silver_path).read_text(encoding="utf-8"))
+        n0 = len(lex_words)
+        for w, v in gold.items():
+            if isinstance(v, dict):
+                lex_words.append(w)
+                lex_phonemes.append(v["DEFAULT"] or "")
+                for tag, ps in v.items():
+                    if tag != "DEFAULT":
+                        lex_words.append(f"{w}\t{tag}")
+                        lex_phonemes.append(ps or "")
+            else:
+                lex_words.append(w)
+                lex_phonemes.append(v)
+        n_gold = len(lex_words) - n0
+        for w, v in silver.items():
             lex_words.append(w)
             lex_phonemes.append(v)
-    n_gold = len(lex_words)
-    for w, v in silver.items():
-        lex_words.append(w)
-        lex_phonemes.append(v)
+        lex_langs.append(lang)
+        lex_sizes.append(len(lex_words) - n0)
+        lex_n_gold.append(n_gold)
 
     symbols = [""] * cfg["n_token"]
     for ph, i in cfg["vocab"].items():
@@ -223,7 +242,7 @@ def main():
 
     gw = gguf.GGUFWriter(args.outfile, "clip")
     gw.add_name("kokoro-82m")
-    gw.add_file_type(gguf.LlamaFileType.ALL_F32)
+    gw.add_file_type({"f32": gguf.LlamaFileType.ALL_F32, "f16": gguf.LlamaFileType.MOSTLY_F16, "q8_0": gguf.LlamaFileType.MOSTLY_Q8_0}[args.outtype])
     gw.add_description("Kokoro-82M (hexgrad/Kokoro-82M, Apache-2.0)")
     gw.add_bool("clip.has_vision_encoder", False)
     gw.add_bool("clip.has_audio_encoder", False)
@@ -241,19 +260,24 @@ def main():
     gw.add_float32(KEY + "length_scale", 1.0)
     gw.add_array(KEY + "symbols", symbols)
     gw.add_array(KEY + "speakers", names)
-    if lex_words:
-        gw.add_string(KEY + "lexicon_lang", "en-us")
-        gw.add_uint32(KEY + "lexicon_n_gold", n_gold)
+    if lex_langs:
+        gw.add_array(KEY + "lexicon_langs", lex_langs)
+        gw.add_array(KEY + "lexicon_sizes", lex_sizes)
+        gw.add_array(KEY + "lexicon_n_gold", lex_n_gold)
         gw.add_array(KEY + "lexicon_words", lex_words)
         gw.add_array(KEY + "lexicon_phonemes", lex_phonemes)
     for n, a in tensors.items():
-        gw.add_tensor(n, a)
+        q = qtypes[n]
+        if q == gguf.GGMLQuantizationType.Q8_0:
+            gw.add_tensor(n, gguf.quants.quantize(a, q), raw_dtype=q)
+        else:
+            gw.add_tensor(n, a.astype(np.float16) if q == gguf.GGMLQuantizationType.F16 else a)
     gw.write_header_to_file()
     gw.write_kv_data_to_file()
     gw.write_tensors_to_file()
     gw.close()
     print(f"{args.outfile}: {len(tensors)} tensors, {sum(a.size for a in tensors.values()) / 1e6:.2f}M params, voices {names}, "
-          f"lexicon {n_gold} gold + {len(lex_words) - n_gold} silver")
+          f"lexicons {dict(zip(lex_langs, lex_sizes))}")
 
 
 if __name__ == "__main__":

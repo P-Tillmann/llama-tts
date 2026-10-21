@@ -200,9 +200,14 @@ struct clip_hparams {
     std::vector<std::string> gen_symbols;  // input symbol per id
     std::vector<std::string> gen_speakers; // speaker name per id
     std::string gen_espeak_voice;          // empty if the symbols are not espeak phonemes
-    std::string gen_lexicon_lang;
-    int32_t     gen_lexicon_n_gold = 0;
-    std::vector<std::string> gen_lexicon_words;
+    struct gen_lexicon {
+        std::string lang;
+        int32_t     n_gold = 0;
+        size_t      offset = 0; // first entry in gen_lexicon_words / gen_lexicon_phonemes
+        size_t      size   = 0;
+    };
+    std::vector<gen_lexicon> gen_lexicons;
+    std::vector<std::string> gen_lexicon_words;    // all lexicons, concatenated
     std::vector<std::string> gen_lexicon_phonemes;
 
     // mimo-v2.5: LLM-side connector (input_local_transformer)

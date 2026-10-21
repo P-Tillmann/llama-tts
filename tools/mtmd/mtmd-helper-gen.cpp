@@ -1416,7 +1416,7 @@ protected:
 };
 
 // Kokoro: the first letter of the voice name is the language
-// with a phonemizer, American English uses the misaki G2P port if the model has its lexicon (espeak for unknown words)
+// with a phonemizer, English uses the misaki G2P port if the model has the lexicon (espeak for unknown words)
 // other languages use espeak and the misaki mapping
 // chunks hold at most 510 phonemes and end at a sentence when possible, like KPipeline
 class kokoro_gen_audio_pipeline : public phoneme_gen_audio_pipeline {
@@ -1443,9 +1443,17 @@ protected:
                 LOG_ERR("mtmd_helper_gen_audio: no espeak voice for language '%c'\n", lang);
                 return 1;
             }
-            const bool use_g2p = lang == 'a' && info.n_lexicon > 0 && info.lexicon_lang && std::string(info.lexicon_lang) == "en-us";
-            if (use_g2p && !g2p) {
-                g2p.reset(new g2p_en(info.lexicon_words, info.lexicon_phonemes, info.n_lexicon, info.n_lexicon_gold, false));
+            // English uses the G2P port when the model has the lexicon of the language
+            const mtmd_gen_lexicon * lex = nullptr;
+            for (int32_t i = 0; (lang == 'a' || lang == 'b') && i < info.n_lexicons; i++) {
+                if (std::string(info.lexicons[i].lang) == it->second) {
+                    lex = &info.lexicons[i];
+                }
+            }
+            const bool use_g2p = lex != nullptr;
+            if (use_g2p && g2p_lang != lang) {
+                g2p.reset(new g2p_en(lex->words, lex->phonemes, lex->n, lex->n_gold, lang == 'b'));
+                g2p_lang = lang;
             }
             for (const auto & text : split_lines(prompt)) {
                 if (text.find_first_not_of(" \t\r") == std::string::npos) {
@@ -1543,6 +1551,7 @@ protected:
 
 private:
     std::unique_ptr<g2p_en> g2p;
+    char g2p_lang = 0;
 
     void emit(std::vector<std::string> cps) {
         // trim spaces at both ends
