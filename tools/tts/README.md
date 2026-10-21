@@ -92,7 +92,7 @@ A voice is an `.onnx` file plus its `.onnx.json` config from [rhasspy/piper-voic
 Kokoro-82M runs from the mmproj alone, like Piper. The voice packs are stored in the GGUF; `--tts-speaker-id` selects one (0 = first voice given to the converter).
 
 Available params:
-- `--tts-phonemizer` points to [tts-phonemizer-espeak](https://github.com/P-Tillmann/tts-phonemizer-espeak); with it `-p` is text. English text goes through espeak-ng and the misaki fallback mapping (the misaki lexicon is not ported yet)
+- `--tts-phonemizer` points to [tts-phonemizer-espeak](https://github.com/P-Tillmann/tts-phonemizer-espeak); with it `-p` is text. American English uses a port of the misaki G2P with its lexicon (stored in the GGUF); espeak-ng is only used for unknown words. Other languages go through espeak-ng and the misaki mapping. Heteronyms (read, present, ...) are chosen with simple context rules, there is no part-of-speech tagger
 - without `--tts-phonemizer`, `-p` is a Kokoro phoneme string (misaki format), one paragraph per line
 - the language follows the first letter of the voice name: `a` American English, `b` British English, `e` Spanish, `f` French, `h` Hindi, `i` Italian, `p` Brazilian Portuguese (Japanese and Chinese are not supported)
 - `--tts-speed` changes the speaking rate (default 1)
@@ -110,4 +110,4 @@ llama-tts -mm kokoro-v1_0.gguf \
 
 **Note for GGUF conversion:**
 
-The converter is not part of `convert_hf_to_gguf.py` yet. It takes `kokoro-v1_0.pth`, `config.json` and one or more voice packs (`voices/*.pt`) from [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0).
+The converter is not part of `convert_hf_to_gguf.py` yet. It takes `kokoro-v1_0.pth`, `config.json` and one or more voice packs (`voices/*.pt`) from [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), and the US English lexicons of [misaki](https://github.com/hexgrad/misaki) (all Apache-2.0).
