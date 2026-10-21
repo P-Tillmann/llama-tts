@@ -487,9 +487,15 @@ void ggml_cuda_op_conv2d(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 
     // the im2col buffer holds at most col_max floats, so long inputs run in several tiles
     const int64_t col_max = 32 * 1024 * 1024;
-    if (kernel->type == GGML_TYPE_F32 && !small_conv && IC * KW * KH <= col_max && ggml_nelements(input) <= limit &&
-        total <= limit && OC <= limit) {
-        conv2d_im2col_gemm_f32(ctx, X_D, K_D, Y_D, params, col_max);
+    if (!small_conv && IC * KW * KH <= col_max && ggml_nelements(input) <= limit && total <= limit && OC <= limit) {
+        // F16 kernels get here only without a fast F16 path: convert them and use the F32 GEMM
+        ggml_cuda_pool_alloc<float> k_f32(ctx.pool());
+        const float * K_F32 = K_D;
+        if (kernel->type == GGML_TYPE_F16) {
+            ggml_get_to_fp32_cuda(GGML_TYPE_F16)(K_D, k_f32.alloc(ggml_nelements(kernel)), ggml_nelements(kernel), st);
+            K_F32 = k_f32.get();
+        }
+        conv2d_im2col_gemm_f32(ctx, X_D, K_F32, Y_D, params, col_max);
         return;
     }
 
