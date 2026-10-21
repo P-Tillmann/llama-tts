@@ -4273,6 +4273,30 @@ void ggml_compute_forward_rms_norm(
 
 // Fused RMS_NORM + MUL: computes dst = rms_norm(src0) * src1 in a single pass.
 // This avoids materializing the intermediate rms_norm result in memory.
+// snake fused: y = x + sin(a*x)^2 * inv_b, one channel per row; the op order matches the unfused graph
+void ggml_compute_forward_snake_fused(
+        const ggml_compute_params * params,
+        const ggml_tensor * x,
+        const ggml_tensor * a,
+        const ggml_tensor * inv_b,
+        ggml_tensor * dst) {
+    const int64_t n  = x->ne[0];
+    const int64_t nr = x->ne[1];
+    const float * pa = (const float *) a->data;
+    const float * pb = (const float *) inv_b->data;
+    for (int64_t r = params->ith; r < nr; r += params->nth) {
+        const float * px = (const float *) ((const char *) x->data + r * x->nb[1]);
+        float * py = (float *) ((char *) dst->data + r * dst->nb[1]);
+        const float ar = pa[r];
+        const float br = pb[r];
+        for (int64_t i = 0; i < n; i++) {
+            const float s  = sinf(px[i] * ar);
+            const float s2 = s * s;
+            py[i] = px[i] + s2 * br;
+        }
+    }
+}
+
 void ggml_compute_forward_rms_norm_mul_fused(
         const ggml_compute_params * params,
         ggml_tensor * dst_rms_norm,
