@@ -206,7 +206,11 @@ int main(int argc, char ** argv) {
     }
     const double t_wav_s = (ggml_time_us() - t_wav_start_us) / 1e6;
 
-    LOG_INF("generated %d frames, %zu bytes of WAV audio (%d Hz)\n", n_frames, data_len, sample_rate);
+    if (lctx) {
+        LOG_INF("generated %d frames, %zu bytes of WAV audio (%d Hz)\n", n_frames, data_len, sample_rate);
+    } else {
+        LOG_INF("generated %zu bytes of WAV audio (%d Hz)\n", data_len, sample_rate);
+    }
 
     const double t_prompt_s = (t_gen_start_us - t_prompt_start_us) / 1e6;
     const double t_total_s  = t_prompt_s + t_gen_s + t_wav_s;

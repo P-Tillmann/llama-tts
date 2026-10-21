@@ -1345,7 +1345,7 @@ static uint32_t unicode_canonical_compose(uint32_t first, uint32_t second) {
     return it == unicode_composition.end() ? 0 : it->second;
 }
 
-std::vector<uint32_t> unicode_cpts_normalize_nfc(const std::vector<uint32_t> & cpts) {
+std::vector<uint32_t> unicode_cpts_decompose_canonical(const std::vector<uint32_t> & cpts) {
     std::vector<uint32_t> decomposed;
     decomposed.reserve(cpts.size());
     std::vector<uint32_t> pending;
@@ -1366,6 +1366,11 @@ std::vector<uint32_t> unicode_cpts_normalize_nfc(const std::vector<uint32_t> & c
             return unicode_canonical_class(a) < unicode_canonical_class(b);
         });
     }
+    return decomposed;
+}
+
+std::vector<uint32_t> unicode_cpts_normalize_nfc(const std::vector<uint32_t> & cpts) {
+    const std::vector<uint32_t> decomposed = unicode_cpts_decompose_canonical(cpts);
 
     std::vector<uint32_t> result;
     result.reserve(decomposed.size());
@@ -1384,29 +1389,6 @@ std::vector<uint32_t> unicode_cpts_normalize_nfc(const std::vector<uint32_t> & c
             result.push_back(cpt);
             previous_class = current_class;
         }
-    }
-    return result;
-}
-
-std::vector<uint32_t> unicode_cpts_decompose_canonical(const std::vector<uint32_t> & cpts) {
-    std::vector<uint32_t> result;
-    result.reserve(cpts.size());
-    std::vector<uint32_t> pending;
-    for (const uint32_t cpt : cpts) {
-        unicode_canonical_decompose(cpt, result, pending);
-    }
-    // canonical ordering: sort each run of combining marks, equal classes keep their order
-    for (size_t i = 0; i < result.size();) {
-        if (unicode_canonical_class(result[i]) == 0) {
-            ++i;
-        }
-        const size_t begin = i;
-        while (i < result.size() && unicode_canonical_class(result[i]) != 0) {
-            ++i;
-        }
-        std::stable_sort(result.begin() + begin, result.begin() + i, [](uint32_t a, uint32_t b) {
-            return unicode_canonical_class(a) < unicode_canonical_class(b);
-        });
     }
     return result;
 }

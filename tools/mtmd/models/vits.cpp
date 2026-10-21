@@ -1,7 +1,7 @@
 #include "models.h"
 
-// activations are channel-major (ne0 = channels, ne1 = time), except in the decoder:
-// its convs run on long sequences and use the time-major direct conv (ne0 = time)
+// activations are channel-major (ne0 = channels, ne1 = time)
+// the decoder is time-major (ne0 = time), its convs run on long sequences
 
 ggml_tensor * clip_graph_vits::conv1x1(ggml_tensor * x, const clip_vits::wb & c) const {
     ggml_tensor * cur = ggml_mul_mat(ctx0, c.w, x);
@@ -61,7 +61,7 @@ ggml_tensor * clip_graph_vits::conv1d_dw(ggml_tensor * x, const clip_vits::wb & 
     return ggml_add(ctx0, cur, c.b);
 }
 
-// time-major in and out, w is [K, OC, IC], stride K/2 and padding (K - stride)/2 so T_out = T * stride (checked at conversion)
+// time-major in and out, w is [K, OC, IC], stride K/2 and padding (K - stride)/2 so T_out = T * stride (checked by the loader)
 ggml_tensor * clip_graph_vits::conv_transpose1d(ggml_tensor * x, const clip_vits::wb & c) const {
     const int64_t K  = c.w->ne[0];
     const int64_t OC = c.w->ne[1];
@@ -221,7 +221,7 @@ ggml_tensor * clip_graph_vits::wavenet(const clip_vits::coupling & c, ggml_tenso
     return out;
 }
 
-// hifi-gan residual block (time-major); dilations are fixed by the piper configs (checked at conversion)
+// hifi-gan residual block (time-major); dilations follow from the resblock type (checked by the loader)
 ggml_tensor * clip_graph_vits::resblock(ggml_tensor * x, const clip_vits::resblock & rb, int j) const {
     static const int dil_1[3]    = { 1, 3, 5 };
     static const int dil_2[3][2] = { { 1, 2 }, { 2, 6 }, { 3, 12 } };

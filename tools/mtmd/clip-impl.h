@@ -339,7 +339,7 @@
 
 // kokoro (StyleTTS2 prosody + iSTFTNet): phoneme ids -> raw PCM, no backbone
 // the shared ALBERT layer uses the generic TN_ATTN_*/TN_FFN_*/TN_LN_* macros, prefix "a.gen.bert", block 0
-// other tensors are "<module path>.weight|bias", see scripts/convert_kokoro.py
+// other tensors are "<module path>.weight|bias", see tools/tts/convert_kokoro.py
 #define TN_A_GEN_KOKORO_VOICES   "a.gen.voices"
 
 // cogvlm

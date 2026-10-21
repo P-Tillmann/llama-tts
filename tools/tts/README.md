@@ -70,6 +70,7 @@ Available params:
 - `--tts-speaker-id` selects the speaker of a multi-speaker voice (default: 0)
 - `--tts-speed` changes the speaking rate, > 1 is faster (default: from the voice config)
 - `--seed` fixes the noise of the duration predictor and the prior
+- a sentence of more than 400 phonemes (about 30 s of speech) is split at a word boundary
 
 Example usage:
 

@@ -21,6 +21,12 @@
 
 #ifdef MTMD_SUBPROCESS
 #include "sheredom/subprocess.h"
+#ifndef _WIN32
+#include <csignal>
+#include <fcntl.h>
+#include <pthread.h>
+#include <time.h>
+#endif
 #endif
 
 //
@@ -1114,7 +1120,7 @@ public:
         req += "\n";
         FILE * f_in  = subprocess_stdin(&proc);
         FILE * f_out = subprocess_stdout(&proc);
-        if (!subprocess_alive(&proc) || fwrite(req.data(), 1, req.size(), f_in) != req.size() || fflush(f_in) != 0) {
+        if (!subprocess_alive(&proc) || !write_all(f_in, req)) {
             LOG_ERR("mtmd_helper_gen_audio: phonemizer is not running\n");
             stop();
             return false;
@@ -1132,7 +1138,9 @@ public:
             const size_t t1 = line.find('\t');
             const size_t t2 = t1 == std::string::npos ? t1 : line.find('\t', t1 + 1);
             if (t2 == std::string::npos) {
-                break;
+                // stderr of the child is merged into stdout, show its diagnostics
+                LOG_WRN("mtmd_helper_gen_audio: phonemizer: %s\n", line.c_str());
+                continue;
             }
             out.push_back({ atoi(line.c_str()), line[t1 + 1] == '1', line.substr(t2 + 1) });
         }
@@ -1152,7 +1160,9 @@ private:
             argv.push_back(a.c_str());
         }
         argv.push_back(nullptr);
-        const int opts = subprocess_option_inherit_environment | subprocess_option_search_user_path | subprocess_option_no_window;
+        // stderr goes to the same pipe, so a chatty child cannot block on a full stderr pipe
+        const int opts = subprocess_option_inherit_environment | subprocess_option_search_user_path | subprocess_option_no_window |
+                         subprocess_option_combined_stdout_stderr;
         if (subprocess_create(argv.data(), opts, &proc) != 0) {
             LOG_ERR("mtmd_helper_gen_audio: failed to start phonemizer %s\n", path.c_str());
             return false;
@@ -1180,10 +1190,40 @@ private:
             line += buf;
             if (!line.empty() && line.back() == '\n') {
                 line.pop_back();
+                if (!line.empty() && line.back() == '\r') {
+                    line.pop_back(); // text mode output on windows
+                }
                 return true;
             }
         }
         return !line.empty();
+    }
+
+    // a dead child must give an error here, not a SIGPIPE that kills the process
+    static bool write_all(FILE * f, const std::string & data) {
+#ifndef _WIN32
+        sigset_t set;
+        sigset_t old;
+        sigemptyset(&set);
+        sigaddset(&set, SIGPIPE);
+        pthread_sigmask(SIG_BLOCK, &set, &old);
+#ifdef F_SETNOSIGPIPE
+        fcntl(fileno(f), F_SETNOSIGPIPE, 1);
+#endif
+#endif
+        const bool ok = fwrite(data.data(), 1, data.size(), f) == data.size() && fflush(f) == 0;
+#if !defined(_WIN32) && defined(__linux__)
+        // drop the SIGPIPE raised by a failed write before unblocking it
+        if (!ok) {
+            struct timespec zero = { 0, 0 };
+            while (sigtimedwait(&set, nullptr, &zero) > 0) {
+            }
+        }
+#endif
+#ifndef _WIN32
+        pthread_sigmask(SIG_SETMASK, &old, nullptr);
+#endif
+        return ok;
     }
 
     struct subprocess_s proc = {};
@@ -1285,8 +1325,8 @@ static std::vector<std::string> piper_sentences(const std::vector<gen_audio_phon
     return sentences;
 }
 
-// models that take phoneme ids and have no backbone (VITS, Kokoro): each utterance is synthesized
-// by one GEN_WAV call in step_prompt(); subclasses turn the prompt into utterances
+// models that take phoneme ids and have no backbone (VITS, Kokoro): one GEN_WAV call per utterance in step_prompt()
+// subclasses turn the prompt into utterances
 class phoneme_gen_audio_pipeline : public mtmd_gen_audio_pipeline {
 public:
     using mtmd_gen_audio_pipeline::mtmd_gen_audio_pipeline;
@@ -1429,31 +1469,45 @@ protected:
             lines = split_lines(prompt);
         }
         // ids are ^ _ (p _)* $, one id per code point
+        // a line over max_phonemes (about 30 s of speech) is split after the last space that fits, to stay in the frame limit
+        const size_t max_phonemes = 400;
         for (const auto & line : lines) {
-            std::vector<int32_t> ids = { sym_id["^"], sym_id["_"] };
+            std::vector<std::string> cps;
             for (const auto & cp : utf8_split(line)) {
-                auto it = sym_id.find(cp);
-                if (it == sym_id.end()) {
-                    if (cp != "\r") {
-                        LOG_WRN("mtmd_helper_gen_audio: skipping unknown phoneme '%s'\n", cp.c_str());
-                    }
-                    continue;
+                if (sym_id.count(cp)) {
+                    cps.push_back(cp);
+                } else if (cp != "\r") {
+                    LOG_WRN("mtmd_helper_gen_audio: skipping unknown phoneme '%s'\n", cp.c_str());
                 }
-                ids.push_back(it->second);
-                ids.push_back(sym_id["_"]);
             }
-            ids.push_back(sym_id["$"]);
-            if (ids.size() > 3) {
-                add_utterance(line, std::move(ids));
+            for (size_t b = 0; b < cps.size();) {
+                size_t e = std::min(cps.size(), b + max_phonemes);
+                if (e < cps.size()) {
+                    size_t sp = e;
+                    while (sp > b && cps[sp - 1] != " ") {
+                        sp--;
+                    }
+                    e = sp > b ? sp : e;
+                }
+                std::string phonemes;
+                std::vector<int32_t> ids = { sym_id["^"], sym_id["_"] };
+                for (size_t i = b; i < e; i++) {
+                    phonemes += cps[i];
+                    ids.push_back(sym_id[cps[i]]);
+                    ids.push_back(sym_id["_"]);
+                }
+                ids.push_back(sym_id["$"]);
+                add_utterance(phonemes, std::move(ids));
+                b = e;
             }
         }
         return 0;
     }
 };
 
-// Kokoro: the language comes from the first letter of the voice name; with a phonemizer, American English
-// goes through the misaki G2P port when the model has its lexicon (espeak only for unknown words),
-// other languages through espeak and the misaki mapping
+// Kokoro: the first letter of the voice name is the language
+// with a phonemizer, American English uses the misaki G2P port if the model has its lexicon (espeak for unknown words)
+// other languages use espeak and the misaki mapping
 // chunks hold at most 510 phonemes and end at a sentence when possible, like KPipeline
 class kokoro_gen_audio_pipeline : public phoneme_gen_audio_pipeline {
 public:
@@ -1488,10 +1542,10 @@ protected:
                     continue;
                 }
                 if (use_g2p) {
-                    // misaki EspeakFallback for words that are not in the lexicon; like phonemizer's preserve_punctuation,
-                    // the word is split at punctuation marks, the pieces are phonemized alone and the marks are kept
+                    // misaki EspeakFallback for words not in the lexicon
+                    // like preserve_punctuation in phonemizer, the word is split at marks and the marks are kept
                     auto fallback = [&](const std::string & word, std::string & ps) {
-                        static const std::string marks = ";:,.!?¡¿—…\"«»“”(){}[]";
+                        static const std::string marks = ";:,.!?\u00a1\u00bf\u2014\u2026\"\u00ab\u00bb\u201c\u201d(){}[]";
                         ps.clear();
                         std::string piece;
                         auto flush = [&]() {
@@ -1551,7 +1605,7 @@ protected:
             auto flush = [&](size_t n) {
                 emit(std::vector<std::string>(cur.begin(), cur.begin() + n));
                 cur.erase(cur.begin(), cur.begin() + n);
-                last_sentence = 0;
+                last_sentence = last_sentence > n ? last_sentence - n : 0;
             };
             for (const auto & p : pieces) {
                 if (cur.size() + p.cps.size() > max_phonemes && !cur.empty()) {
@@ -1605,7 +1659,12 @@ private:
 };
 
 static std::unique_ptr<mtmd_gen_audio_pipeline> make_pipeline(llama_context * lctx, mtmd_context * mctx) {
-    switch (mtmd_gen_audio_get_info(mctx).type) {
+    const auto type = mtmd_gen_audio_get_info(mctx).type;
+    if (!lctx && type != MTMD_GEN_AUDIO_TYPE_VITS && type != MTMD_GEN_AUDIO_TYPE_KOKORO) {
+        LOG_ERR("mtmd_helper_gen_audio: this model needs a text model (backbone)\n");
+        return nullptr;
+    }
+    switch (type) {
         case MTMD_GEN_AUDIO_TYPE_QWEN3TTS:
             return std::unique_ptr<mtmd_gen_audio_pipeline>(new qwen3tts_gen_audio_pipeline(lctx, mctx));
         case MTMD_GEN_AUDIO_TYPE_POCKETTTS:
@@ -1625,7 +1684,11 @@ struct mtmd_helper_gen_audio {
 
 mtmd_helper_gen_audio * mtmd_helper_gen_audio_init(struct llama_context * lctx, struct mtmd_context * mctx) {
     auto * ctx = new mtmd_helper_gen_audio();
-    ctx->pipeline = make_pipeline(lctx, mctx);
+    try {
+        ctx->pipeline = make_pipeline(lctx, mctx);
+    } catch (const std::exception & e) {
+        LOG_ERR("mtmd_helper_gen_audio: %s\n", e.what());
+    }
     return ctx;
 }
 
@@ -1653,7 +1716,12 @@ int32_t mtmd_helper_gen_audio_set_input(mtmd_helper_gen_audio * ctx, const mtmd_
         LOG_ERR("mtmd_helper_gen_audio: unsupported or missing gen-audio pipeline\n");
         return 1;
     }
-    return ctx->pipeline->set_input(inp);
+    try {
+        return ctx->pipeline->set_input(inp);
+    } catch (const std::exception & e) {
+        LOG_ERR("mtmd_helper_gen_audio: %s\n", e.what());
+        return 1;
+    }
 }
 
 int32_t mtmd_helper_gen_audio_step_prompt(mtmd_helper_gen_audio * ctx, int32_t n_batch) {
