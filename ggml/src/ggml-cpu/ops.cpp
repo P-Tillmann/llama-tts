@@ -7500,6 +7500,10 @@ static void ggml_compute_forward_conv_2d_impl(const ggml_compute_params * params
 
     void * tmp = params->wdata;
 
+    // 1-D F32 conv (H = 1): the valid taps of a patch are copied without per-element bounds checks
+    const bool fast_1d = !params->use_ref && kernel_type == GGML_TYPE_F32 && knl_h == 1 && src_h == 1 && dst_h == 1 && pad_y == 0 &&
+                         src->nb[0] == sizeof(float);
+
     for (int64_t batch_i = 0; batch_i < batch_n; ++batch_i) {
 
         const int64_t patch_start_batch = batch_i * patches_per_batch;
@@ -7519,6 +7523,32 @@ static void ggml_compute_forward_conv_2d_impl(const ggml_compute_params * params
 
             const float * src_base = (const float *)((const char *)src_data + batch_n * src->nb[3]);
             char *        dst_row  = (char *) tmp + (p % patches_per_batch) * knl_n * traits->type_size;
+
+            if (fast_1d) {
+                const int64_t x0 = src_y * stride_x - pad_x;
+                int64_t kx_lo = 0;
+                while (kx_lo < knl_w && x0 + kx_lo * dilation_x < 0) {
+                    kx_lo++;
+                }
+                int64_t kx_hi = knl_w;
+                while (kx_hi > kx_lo && x0 + (kx_hi - 1) * dilation_x >= src_w) {
+                    kx_hi--;
+                }
+                for (int64_t ic = 0; ic < c_in; ++ic) {
+                    const float * s = (const float *)((const char *) src_base + ic * src->nb[2]);
+                    float *       r = (float *) dst_row + ic * knl_w;
+                    for (int64_t kx = 0; kx < kx_lo; ++kx) {
+                        r[kx] = 0.0f;
+                    }
+                    for (int64_t kx = kx_lo; kx < kx_hi; ++kx) {
+                        r[kx] = s[x0 + kx * dilation_x];
+                    }
+                    for (int64_t kx = kx_hi; kx < knl_w; ++kx) {
+                        r[kx] = 0.0f;
+                    }
+                }
+                continue;
+            }
 
             for (int64_t ic = 0; ic < c_in; ++ic) {
                 for (int64_t ky = 0; ky < knl_h; ++ky) {

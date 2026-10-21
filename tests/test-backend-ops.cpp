@@ -10171,6 +10171,20 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             }
         }
     }
+    // 1-D convs (H = 1, KH = 1), as used by audio models
+    for (int s0 : { 1, 2 }) {
+        for (int p0 : { 0, 1, 5 }) {
+            for (int d0 : { 1, 3 }) {
+                for (int KW : { 1, 3, 7, 11 }) {
+                    for (int W : { 5, 100 }) {
+                        if (calc_conv_output_size(W, KW, s0, p0, d0) > 0) {
+                            test_cases.emplace_back(new test_conv_2d({ W, 1, 9, 2 }, { KW, 1, 9, 5 }, GGML_TYPE_F32, s0, 1, p0, 0, d0, 1, false));
+                        }
+                    }
+                }
+            }
+        }
+    }
     for (auto kernel_type : {GGML_TYPE_F32, GGML_TYPE_F16}) {
         test_cases.emplace_back(new test_conv_2d({ 256, 256, 192, 1 }, { 3, 3, 192, 96 }, kernel_type, 1, 1, 1, 1, 1, 1, false)); // bool cwhn = false
         test_cases.emplace_back(new test_conv_2d({ 256, 256, 192, 1 }, { 3, 3, 192, 96 }, kernel_type, 1, 1, 1, 1, 1, 1, true));  // bool cwhn = true
